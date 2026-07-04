@@ -15,6 +15,7 @@ SUPABASE_PROJECT_REF=your-project-ref
 DATABASE_URL=postgresql://postgres.your-project-ref:YOUR_DB_PASSWORD@aws-0-us-east-1.pooler.supabase.com:6543/postgres
 LOG_LEVEL=info
 MAX_JSON_BODY_BYTES=1048576
+ADMIN_TOKEN=generate_a_long_random_admin_token
 ```
 
 `DATABASE_URL` should be the Supabase transaction pooler string for hosted Render runtime. It normally uses port `6543`.
@@ -55,6 +56,7 @@ The `runtime` object should report:
 {
   "storageBackend": "postgres",
   "databaseConfigured": true,
+  "adminConfigured": true,
   "supabaseConfigured": true,
   "supabaseJwksConfigured": true,
   "maxJsonBodyBytes": 1048576

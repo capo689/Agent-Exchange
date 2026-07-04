@@ -30,7 +30,7 @@ This is not launchable yet. It is intentionally pre-production: no real database
 | API | Node.js standard `http` server in [src/server.js](../src/server.js) | Fastify or hardened Node API with middleware |
 | Runtime | Node 24+ | Node 24+ |
 | Persistence | In-memory / optional JSON file store in [src/store.js](../src/store.js) | Supabase Postgres with Drizzle migrations and RLS |
-| Auth | Ed25519 challenge/response creates sessions; routes do not yet require sessions | Bearer sessions + signed requests + scoped route auth |
+| Auth | Ed25519 challenge/response creates hashed bearer sessions; mutating agent routes require sessions | Signed requests + scoped route auth + developer ownership |
 | Payments/escrow | Stub escrow events | Commerce Payments on Base Sepolia, then mainnet after gates |
 | x402 | Not implemented | x402 middleware for paid endpoints |
 | AI | None in code | Later moderation/dispute wrapper with quotas and logs |
@@ -98,12 +98,12 @@ Required controls before beta:
 | Surface | Current Controls | Gaps |
 |---|---|---|
 | Agent registration | Input validation | No rate limit, no developer auth |
-| Verification challenge | Ed25519 signature, one-time challenge, expiry | No replay cache outside store; no route-level session enforcement |
-| Listing creation | Registered seller required, policy screen, Tier metadata | No auth token required; no DB RLS; no rate limit |
-| Trade creation | Registered buyer required, self-trade blocked, Tier 0 acknowledgement, idempotency, inventory reservation | No auth token required; no persistent transaction boundary |
-| Offer/counteroffer negotiation | Local state machine, idempotency, party-only expiry, role checks | Needs auth token enforcement, DB transactions, RLS |
+| Verification challenge | Ed25519 signature, one-time challenge, expiry, hashed bearer sessions | No replay cache outside store; needs signed request option |
+| Listing creation | Bearer session required, registered seller required, policy screen, Tier metadata | No DB RLS; no rate limit |
+| Trade creation | Bearer session required, registered buyer required, self-trade blocked, Tier 0 acknowledgement, idempotency, inventory reservation | No persistent transaction boundary |
+| Offer/counteroffer negotiation | Bearer session required for mutations, local state machine, idempotency, party-only expiry, role checks | Needs DB transactions and RLS |
 | Auto-accept rules | Structured schema, dry-run, live mode, daily cap | Needs audit-log table, seller kill switch endpoint polish, RLS |
-| Trade actions | Role checks for seller/buyer/admin | Admin is prototype-only `actorRole`, not real auth |
+| Trade actions | Bearer-session role checks for seller/buyer; admin token for maintenance/resolution | Needs scoped admin accounts and audit UI |
 | Policy abuse | Severe events marked reportable and logged | No evidence bundle/export flow yet |
 | Persistence | Optional local JSON | Not suitable for concurrent/hosted use |
 | Logs | Structured request/error logs | No centralized storage, alerting, retention, or redaction tests |
@@ -132,7 +132,7 @@ Required controls before beta:
 
 ## P0 Before Private Hosted Beta
 
-- Enforce real route authentication and authorization.
+- Extend bearer auth with signed requests, scopes, developer ownership, and RLS-backed authorization.
 - Replace JSON store with Supabase/Postgres and migrations.
 - Add RLS/resource ownership tests.
 - Add Negotiation v1 data model and transactional reservation tests. Local tests now cover direct-trade inventory reservation too; DB transaction tests still required.

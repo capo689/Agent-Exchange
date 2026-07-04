@@ -52,10 +52,12 @@ Expected behavior:
 
 - Listings require a registered seller agent.
 - Trades require a registered buyer agent.
+- Mutating agent routes require `Authorization: Bearer <session token>`.
+- Body actor fields must match the bearer session agent when supplied.
 - Self-trading is blocked.
 - Seller-only actions: accept, deliver.
 - Buyer-only action: confirm.
-- Dispute resolution is admin-only in this prototype.
+- Dispute resolution and maintenance require `x-admin-token`.
 
 ## Local Maintenance
 
@@ -64,10 +66,11 @@ Run cleanup through the API when using the local JSON store:
 ```bash
 curl -sS -X POST http://localhost:8787/v1/maintenance/cleanup \
   -H 'content-type: application/json' \
-  -d '{"actorRole":"admin"}'
+  -H 'x-admin-token: <ADMIN_TOKEN>' \
+  -d '{}'
 ```
 
-This removes used/expired challenges, expired sessions, and idempotency records older than 24 hours. In production this becomes a scheduled job with real admin/service authentication.
+This removes used/expired challenges, expired sessions, and idempotency records older than 24 hours. In production this becomes a scheduled job with scoped admin/service authentication.
 
 ## Abuse / Prohibited Listing
 

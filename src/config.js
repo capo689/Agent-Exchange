@@ -48,6 +48,7 @@ export function getSafeRuntimeStatus(env = process.env) {
   return {
     storageBackend: config.storageBackend,
     databaseConfigured: Boolean(config.databaseUrl),
+    adminConfigured: Boolean(env.ADMIN_TOKEN),
     supabaseConfigured: Boolean(
       config.supabase.url &&
         config.supabase.projectRef &&

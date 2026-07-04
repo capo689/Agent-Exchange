@@ -129,7 +129,9 @@ function validateAutoAcceptRuleInput(input) {
   const errors = [];
 
   if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
-  if (!input.actorAgentId || typeof input.actorAgentId !== 'string') errors.push('actorAgentId is required');
+  if (input.actorAgentId !== undefined && typeof input.actorAgentId !== 'string') {
+    errors.push('actorAgentId must be a string when supplied');
+  }
   if (!input.minUnitPriceUsdc || !/^\d+(\.\d{1,6})?$/.test(String(input.minUnitPriceUsdc))) {
     errors.push('minUnitPriceUsdc must be a decimal string');
   }
@@ -155,6 +157,108 @@ function getHeader(headers, name) {
 
 function idempotencyKey(headers, body) {
   return getHeader(headers, 'idempotency-key') ?? body.idempotencyKey ?? null;
+}
+
+function getBearerToken(headers) {
+  const header = getHeader(headers, 'authorization');
+  if (!header || typeof header !== 'string') return null;
+
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : null;
+}
+
+function authenticateAgent(headers, store) {
+  const token = getBearerToken(headers);
+  if (!token) {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'authentication_required',
+          message: 'Use Authorization: Bearer <session token> for this request.'
+        }
+      }
+    };
+  }
+
+  const session = store.getSessionByToken(token);
+  if (!session) {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'invalid_or_expired_session',
+          message: 'The bearer session is invalid or expired.'
+        }
+      }
+    };
+  }
+
+  const agent = store.getAgent(session.agentId);
+  if (!agent || agent.status !== 'active') {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'agent_session_inactive',
+          message: 'The bearer session is not tied to an active agent.'
+        }
+      }
+    };
+  }
+
+  return { auth: { session, agent, agentId: agent.id } };
+}
+
+function requireAdmin(headers) {
+  const expected = process.env.ADMIN_TOKEN;
+  if (!expected) {
+    return {
+      status: 503,
+      body: {
+        error: 'admin_auth_not_configured',
+        message: 'ADMIN_TOKEN must be configured before admin maintenance or dispute resolution can run.'
+      }
+    };
+  }
+
+  if (getHeader(headers, 'x-admin-token') !== expected) {
+    return {
+      status: 403,
+      body: {
+        error: 'admin_actor_required',
+        message: 'Admin routes require a valid x-admin-token header.'
+      }
+    };
+  }
+
+  return null;
+}
+
+function requireBodyActorMatchesSession(body, auth) {
+  if (body.actorAgentId && body.actorAgentId !== auth.agentId) {
+    return {
+      status: 403,
+      body: {
+        error: 'authenticated_actor_mismatch',
+        message: 'actorAgentId must match the bearer session agent.'
+      }
+    };
+  }
+  return null;
+}
+
+function requireFieldMatchesSession(field, value, auth) {
+  if (value !== auth.agentId) {
+    return {
+      status: 403,
+      body: {
+        error: 'authenticated_actor_mismatch',
+        message: `${field} must match the bearer session agent.`
+      }
+    };
+  }
+  return null;
 }
 
 function authorizeTradeAction({ rawAction, trade, actor, body }) {
@@ -186,7 +290,7 @@ function authorizeTradeAction({ rawAction, trade, actor, body }) {
   }
 
   if (rawAction === 'refund') {
-    return actor === trade.sellerAgentId || body.actorRole === 'admin'
+    return actor === trade.sellerAgentId || actor === 'admin'
       ? null
       : {
           error: 'seller_or_admin_required',
@@ -195,7 +299,7 @@ function authorizeTradeAction({ rawAction, trade, actor, body }) {
   }
 
   if (rawAction === 'resolve') {
-    return body.actorRole === 'admin'
+    return actor === 'admin'
       ? null
       : {
           error: 'admin_actor_required',
@@ -292,12 +396,17 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && listingAutoAcceptMatch) {
+    const authResult = authenticateAgent(headers, store);
+    if (authResult.error) return authResult.error;
+
     const listing = store.getListing(listingAutoAcceptMatch[1]);
     if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
 
     const errors = validateAutoAcceptRuleInput(body);
     if (errors.length > 0) return { status: 400, body: { error: 'invalid_auto_accept_rule', errors } };
-    if (body.actorAgentId !== listing.sellerAgentId) {
+    const actorError = requireBodyActorMatchesSession(body, authResult.auth);
+    if (actorError) return actorError;
+    if (authResult.auth.agentId !== listing.sellerAgentId) {
       return { status: 403, body: { error: 'seller_actor_required' } };
     }
 
@@ -305,10 +414,13 @@ export async function handleApiRequest(
       {
         scope: `POST /v1/listings/${listing.id}/auto-accept-rules`,
         key: idempotencyKey(headers, body),
-        input: body
+        input: { ...body, actorAgentId: authResult.auth.agentId }
       },
       () => {
-        const rule = store.createAutoAcceptRule(listing, body);
+        const rule = store.createAutoAcceptRule(listing, {
+          ...body,
+          actorAgentId: authResult.auth.agentId
+        });
         return { status: 201, body: { autoAcceptRule: rule } };
       }
     );
@@ -319,9 +431,8 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/maintenance/cleanup') {
-    if (body.actorRole !== 'admin') {
-      return { status: 403, body: { error: 'admin_actor_required' } };
-    }
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
     return { status: 200, body: { cleanup: store.cleanupExpired() } };
   }
 
@@ -390,12 +501,18 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/listings') {
+    const authResult = authenticateAgent(headers, store);
+    if (authResult.error) return authResult.error;
+
     const input = body;
     const errors = validateListingInput(input);
 
     if (errors.length > 0) {
       return { status: 400, body: { error: 'invalid_listing', errors } };
     }
+
+    const actorError = requireFieldMatchesSession('sellerAgentId', input.sellerAgentId, authResult.auth);
+    if (actorError) return actorError;
 
     if (!store.getAgent(input.sellerAgentId)) {
       return {
@@ -435,12 +552,18 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/trades') {
+    const authResult = authenticateAgent(headers, store);
+    if (authResult.error) return authResult.error;
+
     const input = body;
     const errors = validateTradeInput(input);
 
     if (errors.length > 0) {
       return { status: 400, body: { error: 'invalid_trade', errors } };
     }
+
+    const actorError = requireFieldMatchesSession('buyerAgentId', input.buyerAgentId, authResult.auth);
+    if (actorError) return actorError;
 
     const listing = store.getListing(input.listingId);
     if (!listing) {
@@ -503,8 +626,13 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/offers') {
+    const authResult = authenticateAgent(headers, store);
+    if (authResult.error) return authResult.error;
+
     const errors = validateOfferInput(body);
     if (errors.length > 0) return { status: 400, body: { error: 'invalid_offer', errors } };
+    const actorError = requireFieldMatchesSession('buyerAgentId', body.buyerAgentId, authResult.auth);
+    if (actorError) return actorError;
 
     const listing = store.getListing(body.listingId);
     if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
@@ -521,13 +649,13 @@ export async function handleApiRequest(
       {
         scope: 'POST /v1/offers',
         key: idempotencyKey(headers, body),
-        input: body
+        input: { ...body, actorAgentId: authResult.auth.agentId }
       },
       () => {
         const offer = store.createOffer(
           {
             ...body,
-            actorAgentId: body.buyerAgentId
+            actorAgentId: authResult.auth.agentId
           },
           listing
         );
@@ -545,14 +673,16 @@ export async function handleApiRequest(
 
   const offerActionMatch = pathname.match(/^\/v1\/offers\/([^/]+)\/([^/]+)$/);
   if (method === 'POST' && offerActionMatch) {
+    const authResult = authenticateAgent(headers, store);
+    if (authResult.error) return authResult.error;
+
     const [, offerId, rawAction] = offerActionMatch;
     const offer = store.getOffer(offerId);
     if (!offer) return { status: 404, body: { error: 'offer_not_found' } };
 
-    const actor = body.actorAgentId;
-    if (!actor || typeof actor !== 'string') {
-      return { status: 400, body: { error: 'actorAgentId is required' } };
-    }
+    const actorError = requireBodyActorMatchesSession(body, authResult.auth);
+    if (actorError) return actorError;
+    const actor = authResult.auth.agentId;
 
     if (rawAction === 'counter') {
       const errors = validateOfferInput({
@@ -568,7 +698,7 @@ export async function handleApiRequest(
         {
           scope: `POST /v1/offers/${offerId}/counter`,
           key: idempotencyKey(headers, body),
-          input: body
+          input: { ...body, actorAgentId: actor }
         },
         () => {
           const counterOffer = store.counterOffer(offer, {
@@ -588,7 +718,7 @@ export async function handleApiRequest(
         {
           scope: `POST /v1/offers/${offerId}/accept`,
           key: idempotencyKey(headers, body),
-          input: body
+          input: { ...body, actorAgentId: actor }
         },
         () => store.acceptOffer(offerId, actor)
       );
@@ -611,11 +741,7 @@ export async function handleApiRequest(
     }
 
     if (rawAction === 'expire') {
-      if (
-        actor !== 'system' &&
-        actor !== offer.buyerAgentId &&
-        actor !== offer.sellerAgentId
-      ) {
+      if (actor !== offer.buyerAgentId && actor !== offer.sellerAgentId) {
         return { status: 403, body: { error: 'trade_party_required' } };
       }
       const expired = store.expireOffer(offerId, actor);
@@ -627,10 +753,12 @@ export async function handleApiRequest(
 
   const autoAcceptDisableMatch = pathname.match(/^\/v1\/auto-accept-rules\/([^/]+)\/disable$/);
   if (method === 'POST' && autoAcceptDisableMatch) {
-    const actor = body.actorAgentId;
-    if (!actor || typeof actor !== 'string') {
-      return { status: 400, body: { error: 'actorAgentId is required' } };
-    }
+    const authResult = authenticateAgent(headers, store);
+    if (authResult.error) return authResult.error;
+    const actorError = requireBodyActorMatchesSession(body, authResult.auth);
+    if (actorError) return actorError;
+    const actor = authResult.auth.agentId;
+
     const existingRule = store.getAutoAcceptRule(autoAcceptDisableMatch[1]);
     if (!existingRule) return { status: 404, body: { error: 'auto_accept_rule_not_found' } };
     if (existingRule.sellerAgentId !== actor) return { status: 403, body: { error: 'seller_actor_required' } };
@@ -668,9 +796,21 @@ export async function handleApiRequest(
       };
     }
 
-    const actor = body.actorAgentId;
-    if (!actor || typeof actor !== 'string') {
-      return { status: 400, body: { error: 'actorAgentId is required' } };
+    let actor = null;
+    if (rawAction === 'resolve') {
+      const adminError = requireAdmin(headers);
+      if (adminError) return adminError;
+      actor = 'admin';
+    } else if (rawAction === 'refund' && body.actorRole === 'admin') {
+      const adminError = requireAdmin(headers);
+      if (adminError) return adminError;
+      actor = 'admin';
+    } else {
+      const authResult = authenticateAgent(headers, store);
+      if (authResult.error) return authResult.error;
+      const actorError = requireBodyActorMatchesSession(body, authResult.auth);
+      if (actorError) return actorError;
+      actor = authResult.auth.agentId;
     }
 
     const authzError = authorizeTradeAction({ rawAction, trade, actor, body });
@@ -682,7 +822,7 @@ export async function handleApiRequest(
       {
         scope: `POST /v1/trades/${tradeId}/${rawAction}`,
         key: idempotencyKey(headers, body),
-        input: body
+        input: { ...body, actorAgentId: actor }
       },
       () => {
         const escrowEvent = transition.escrowType

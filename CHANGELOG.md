@@ -16,3 +16,4 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 - Implemented local Negotiation v1 API: offers, counteroffers, accept/reject/withdraw/expire, inventory reservations, bid/ask market data, and auto-accept rules.
 - Fixed overwatch findings: direct trades now reserve inventory, offer expiry is party/system-only, JSON request bodies are capped, and local cleanup removes expired/used transient records.
 - Added Render/Supabase environment configuration, safe runtime health reporting, deployment notes, and the initial Supabase schema SQL with transactional inventory reservation support.
+- Added bearer session enforcement for agent mutations, hashed session token storage, admin-token protected maintenance/resolution paths, SDK session helpers, and impersonation tests.

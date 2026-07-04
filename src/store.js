@@ -12,6 +12,10 @@ function digest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+function tokenDigest(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
 function clone(value) {
   return structuredClone(value);
 }
@@ -406,17 +410,43 @@ export function createStore({ filePath } = {}) {
 
     createSession(agentId) {
       const now = nowIso();
-      const session = {
+      const token = randomBytes(32).toString('base64url');
+      const storedSession = {
         id: `ses_${randomUUID()}`,
-        token: randomBytes(32).toString('base64url'),
+        tokenHash: tokenDigest(token),
         agentId,
         expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
         createdAt: now
       };
 
-      sessions.set(session.id, session);
+      sessions.set(storedSession.id, storedSession);
       persist();
-      return session;
+      return {
+        id: storedSession.id,
+        token,
+        agentId: storedSession.agentId,
+        expiresAt: storedSession.expiresAt,
+        createdAt: storedSession.createdAt
+      };
+    },
+
+    getSessionByToken(token, now = new Date()) {
+      if (!token || typeof token !== 'string') return null;
+
+      const hash = tokenDigest(token);
+      for (const session of sessions.values()) {
+        const tokenMatches = session.tokenHash === hash || session.token === token;
+        if (!tokenMatches) continue;
+        if (Date.parse(session.expiresAt) <= now.getTime()) return null;
+
+        return {
+          id: session.id,
+          agentId: session.agentId,
+          expiresAt: session.expiresAt,
+          createdAt: session.createdAt
+        };
+      }
+      return null;
     },
 
     listListings() {

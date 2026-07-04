@@ -13,15 +13,29 @@ export function signChallenge(privateKey, canonicalChallenge) {
 }
 
 export class AgentExchangeClient {
-  constructor({ baseUrl = 'http://localhost:8787' } = {}) {
+  constructor({ baseUrl = 'http://localhost:8787', sessionToken = null } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.sessionToken = sessionToken;
+  }
+
+  withSession(sessionToken) {
+    return new AgentExchangeClient({ baseUrl: this.baseUrl, sessionToken });
+  }
+
+  setSessionToken(sessionToken) {
+    this.sessionToken = sessionToken;
+    return this;
   }
 
   async request(method, path, body, headers = {}) {
+    const authHeaders = this.sessionToken
+      ? { authorization: `Bearer ${this.sessionToken}` }
+      : {};
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
         'content-type': 'application/json',
+        ...authHeaders,
         ...headers
       },
       body: body ? JSON.stringify(body) : undefined

@@ -6,26 +6,77 @@ import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
 import { createApp, handleApiRequest } from '../src/server.js';
 import { createStore } from '../src/store.js';
 
+process.env.ADMIN_TOKEN ??= 'test-admin-token';
+
 function createClient() {
   const store = createStore();
+  const authHeadersByAgentId = new Map();
+
+  function inferHeaders(body = {}, headers = {}) {
+    if (headers.authorization || headers.Authorization || headers['x-admin-token']) return headers;
+
+    const agentId = body.actorAgentId ?? body.sellerAgentId ?? body.buyerAgentId;
+    const authHeaders = authHeadersByAgentId.get(agentId);
+    return authHeaders ? { ...authHeaders, ...headers } : headers;
+  }
+
   return {
+    authHeadersByAgentId,
     get(pathname) {
       return handleApiRequest({ method: 'GET', pathname }, store);
     },
     post(pathname, body, headers = {}) {
+      return handleApiRequest({ method: 'POST', pathname, body, headers: inferHeaders(body, headers) }, store);
+    },
+    postWithoutAuth(pathname, body, headers = {}) {
       return handleApiRequest({ method: 'POST', pathname, body, headers }, store);
+    },
+    adminPost(pathname, body = {}, headers = {}) {
+      const previous = process.env.ADMIN_TOKEN;
+      process.env.ADMIN_TOKEN = 'test-admin-token';
+      const result = handleApiRequest({
+        method: 'POST',
+        pathname,
+        body,
+        headers: { 'x-admin-token': 'test-admin-token', ...headers }
+      }, store);
+      if (previous === undefined) {
+        delete process.env.ADMIN_TOKEN;
+      } else {
+        process.env.ADMIN_TOKEN = previous;
+      }
+      return result;
     }
   };
 }
 
 async function registerBasicAgent(client, name) {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const response = await client.post('/v1/agents/register', {
     developerId: `dev_${name}`,
     name,
-    reputationScore: name.includes('good') ? 90 : 0
+    reputationScore: name.includes('good') ? 90 : 0,
+    publicKeyJwk: publicKey.export({ format: 'jwk' })
   });
   assert.equal(response.status, 201);
-  return response.body.agent;
+
+  const challenged = await client.post(`/v1/agents/${response.body.agent.id}/verify/challenge`, {});
+  const signature = sign(null, Buffer.from(challenged.body.challenge.canonical), privateKey).toString('base64');
+  const verified = await client.post(`/v1/agents/${response.body.agent.id}/verify/response`, {
+    challengeId: challenged.body.challenge.id,
+    signature
+  });
+  assert.equal(verified.status, 201);
+
+  const agent = {
+    ...response.body.agent,
+    sessionToken: verified.body.session.token,
+    authHeaders: {
+      authorization: `Bearer ${verified.body.session.token}`
+    }
+  };
+  client.authHeadersByAgentId.set(agent.id, agent.authHeaders);
+  return agent;
 }
 
 async function registerBuyerSeller(client) {
@@ -96,6 +147,7 @@ test('config accepts Render Supabase env group names without exposing secrets in
   assert.deepEqual(status, {
     storageBackend: 'postgres',
     databaseConfigured: true,
+    adminConfigured: false,
     supabaseConfigured: true,
     supabaseJwksConfigured: true,
     maxJsonBodyBytes: 1048576
@@ -171,10 +223,10 @@ test('prohibited severe abuse listings are blocked and marked reportable', async
   assert.ok(result.body.matches.some((match) => match.id === 'human_trafficking'));
 });
 
-test('listings require a registered seller agent', async () => {
+test('listings require an authenticated seller session', async () => {
   const client = createClient();
-  const result = await client.post('/v1/listings', {
-    sellerAgentId: 'agent_missing',
+  const result = await client.postWithoutAuth('/v1/listings', {
+    sellerAgentId: 'agt_missing',
     title: 'Missing seller listing',
     description: 'Should be rejected before policy screening.',
     category: 'digital_good',
@@ -182,8 +234,28 @@ test('listings require a registered seller agent', async () => {
     priceUsdc: '1.00'
   });
 
-  assert.equal(result.status, 404);
-  assert.equal(result.body.error, 'seller_agent_not_found');
+  assert.equal(result.status, 401);
+  assert.equal(result.body.error, 'authentication_required');
+});
+
+test('bearer session must match declared agent identity on mutations', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const listing = await client.post(
+    '/v1/listings',
+    {
+      sellerAgentId: seller.id,
+      title: 'Impersonation listing',
+      description: 'Buyer token cannot create as seller.',
+      category: 'digital_good',
+      assuranceTier: 0,
+      priceUsdc: '1.00'
+    },
+    buyer.authHeaders
+  );
+
+  assert.equal(listing.status, 403);
+  assert.equal(listing.body.error, 'authenticated_actor_mismatch');
 });
 
 test('agents can register and verify an Ed25519 challenge once', async () => {
@@ -209,6 +281,7 @@ test('agents can register and verify an Ed25519 challenge once', async () => {
   assert.equal(verified.status, 201);
   assert.equal(verified.body.session.agentId, registered.body.agent.id);
   assert.ok(verified.body.session.token);
+  assert.equal('tokenHash' in verified.body.session, false);
 
   const replay = await client.post(`/v1/agents/${registered.body.agent.id}/verify/response`, {
     challengeId: challenged.body.challenge.id,
@@ -398,7 +471,7 @@ test('dispute resolution is admin-only in the current prototype', async () => {
     actorAgentId: buyer.id,
     resolution: 'refund'
   });
-  const adminResolve = await client.post(`/v1/trades/${offer.body.trade.id}/resolve`, {
+  const adminResolve = await client.adminPost(`/v1/trades/${offer.body.trade.id}/resolve`, {
     actorAgentId: 'admin_1',
     actorRole: 'admin',
     resolution: 'refund'
@@ -809,7 +882,7 @@ test('cleanup maintenance is admin-only and removes used challenges', async () =
   const forbidden = await client.post('/v1/maintenance/cleanup', {
     actorRole: 'agent'
   });
-  const cleaned = await client.post('/v1/maintenance/cleanup', {
+  const cleaned = await client.adminPost('/v1/maintenance/cleanup', {
     actorRole: 'admin'
   });
 

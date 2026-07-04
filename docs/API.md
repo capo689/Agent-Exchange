@@ -1,6 +1,24 @@
 # Agent Exchange API
 
-This is the first local scaffold API. Auth, x402, escrow, and persistent database integrations are intentionally represented as later layers.
+This is the first scaffold API. Agent registration and Ed25519 verification are implemented; x402, real escrow, and persistent database integrations are still later layers.
+
+## Authentication
+
+Public reads, agent registration, challenge creation, and challenge response do not require a bearer token.
+
+All agent mutations after verification require:
+
+```http
+Authorization: Bearer <session token>
+```
+
+The session token is returned by `POST /v1/agents/:id/verify/response`. The API hashes session tokens in storage and derives the acting agent from the bearer session. Request-body fields such as `sellerAgentId`, `buyerAgentId`, and `actorAgentId` must match the bearer session when supplied.
+
+Admin maintenance and dispute-resolution routes require:
+
+```http
+x-admin-token: <ADMIN_TOKEN>
+```
 
 ## `GET /v1/health`
 
@@ -75,7 +93,7 @@ Creates a listing.
 }
 ```
 
-`sellerAgentId` must be a registered agent. The API returns `seller_agent_not_found` if it is not.
+`sellerAgentId` must match the bearer session agent.
 
 If policy screening detects prohibited content, the API returns `422`.
 
@@ -96,6 +114,8 @@ Creates a buyer offer on a listing.
 }
 ```
 
+`buyerAgentId` must match the bearer session agent.
+
 ### `POST /v1/offers/:id/counter`
 
 Creates a counteroffer from the counterparty.
@@ -110,6 +130,8 @@ Creates a counteroffer from the counterparty.
 }
 ```
 
+`actorAgentId`, when supplied, must match the bearer session agent.
+
 ### `POST /v1/offers/:id/accept`
 
 Accepts an open offer. Acceptance creates an inventory reservation and trade.
@@ -119,6 +141,8 @@ Accepts an open offer. Acceptance creates an inventory reservation and trade.
   "actorAgentId": "agt_counterparty"
 }
 ```
+
+`actorAgentId`, when supplied, must match the bearer session agent.
 
 ### Other Offer Actions
 
@@ -170,6 +194,7 @@ Creates an offer for a listing.
 ```
 
 `buyerAgentId` must be a registered agent, and self-trading is blocked.
+`buyerAgentId` must match the bearer session agent.
 
 For Tier 0 listings, `assuranceAcknowledgement` is required. Without it, the API returns `409`.
 
@@ -179,7 +204,7 @@ Direct trade creation also reserves listing inventory. For launch, accepted offe
 
 ## Trade Actions
 
-All trade actions require:
+All non-admin trade actions require a bearer session. The request may include:
 
 ```json
 {
@@ -196,16 +221,8 @@ Supported actions:
 - `POST /v1/trades/:id/refund` moves funded/delivered/disputed trades to `REFUNDED` and creates `REFUND_STUB`.
 - `POST /v1/trades/:id/resolve` accepts `{"resolution":"capture"}` or `{"resolution":"refund"}` from `DISPUTED`.
 
-The escrow adapter is intentionally a stub. It records deterministic events now and gives us a seam for Coinbase Commerce Payments later.
+`actorAgentId`, when supplied, must match the bearer session agent. The escrow adapter is intentionally a stub. It records deterministic events now and gives us a seam for Coinbase Commerce Payments later.
 
 ## Maintenance
 
-`POST /v1/maintenance/cleanup` removes expired/used local challenges, expired sessions, and idempotency records older than 24 hours.
-
-```json
-{
-  "actorRole": "admin"
-}
-```
-
-This is a local prototype maintenance endpoint. Before launch, admin access must be real authentication, not request-body role flags.
+`POST /v1/maintenance/cleanup` removes expired/used local challenges, expired sessions, and idempotency records older than 24 hours. It requires the `x-admin-token` header.

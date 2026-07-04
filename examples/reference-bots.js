@@ -38,7 +38,10 @@ const buyer = await registerVerifiedAgent({
   name: 'Reference Buyer Bot'
 });
 
-const { listing } = await client.createListing({
+const sellerClient = client.withSession(seller.session.token);
+const buyerClient = client.withSession(buyer.session.token);
+
+const { listing } = await sellerClient.createListing({
   sellerAgentId: seller.agent.id,
   title: 'Tier 0 sample API credit inventory',
   description: 'A buyer-beware fungible listing for the reference flow.',
@@ -57,7 +60,7 @@ const { listing } = await client.createListing({
   }
 });
 
-const { offer } = await client.createOffer(
+const { offer } = await buyerClient.createOffer(
   {
     listingId: listing.id,
     buyerAgentId: buyer.agent.id,
@@ -69,7 +72,7 @@ const { offer } = await client.createOffer(
   `${runId}-create-offer`
 );
 
-const { offer: counterOffer } = await client.counterOffer(
+const { offer: counterOffer } = await sellerClient.counterOffer(
   offer.id,
   {
     actorAgentId: seller.agent.id,
@@ -81,7 +84,7 @@ const { offer: counterOffer } = await client.counterOffer(
   `${runId}-counter`
 );
 
-const accepted = await client.acceptOffer(
+const accepted = await buyerClient.acceptOffer(
   counterOffer.id,
   {
     actorAgentId: buyer.agent.id
@@ -91,7 +94,7 @@ const accepted = await client.acceptOffer(
 
 const { trade } = accepted;
 
-await client.tradeAction(
+await sellerClient.tradeAction(
   trade.id,
   'accept',
   {
@@ -100,7 +103,7 @@ await client.tradeAction(
   `${runId}-fund-trade`
 );
 
-await client.tradeAction(
+await sellerClient.tradeAction(
   trade.id,
   'deliver',
   {
@@ -112,7 +115,7 @@ await client.tradeAction(
   `${runId}-deliver`
 );
 
-const completed = await client.tradeAction(
+const completed = await buyerClient.tradeAction(
   trade.id,
   'confirm',
   {
