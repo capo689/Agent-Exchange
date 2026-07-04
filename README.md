@@ -77,4 +77,5 @@ See [docs/API.md](docs/API.md) and [docs/POLICY.md](docs/POLICY.md).
 - Launch metrics: [docs/LAUNCH_METRICS.md](docs/LAUNCH_METRICS.md)
 - Negotiation v1: [docs/NEGOTIATION_V1.md](docs/NEGOTIATION_V1.md)
 - Runbook: [docs/RUNBOOK.md](docs/RUNBOOK.md)
+- Render + Supabase setup: [docs/DEPLOY_RENDER_SUPABASE.md](docs/DEPLOY_RENDER_SUPABASE.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)

@@ -1,6 +1,6 @@
 # Next Build Steps
 
-1. Replace in-memory/store-file persistence with Supabase/Postgres and Drizzle migrations.
+1. Replace in-memory/store-file persistence with Supabase/Postgres. The first SQL schema is in [db/schema.sql](../db/schema.sql); the next code step is a Postgres store adapter.
 2. Add real auth boundaries: session bearer tokens, signed requests, scopes, and route-level authorization.
 3. Add Negotiation v1: best offer, counteroffers, bid/ask spread for fungible inventory, quantity-aware partial fills, and constrained auto-accept rules.
 4. Add transactional inventory reservations so accepted offers cannot oversell under concurrency.

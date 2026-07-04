@@ -15,3 +15,4 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 - Promoted Negotiation v1 to initial launch scope: best offers, bid/ask spread for fungible inventory, quantity-aware partial fills, and constrained auto-accept rules.
 - Implemented local Negotiation v1 API: offers, counteroffers, accept/reject/withdraw/expire, inventory reservations, bid/ask market data, and auto-accept rules.
 - Fixed overwatch findings: direct trades now reserve inventory, offer expiry is party/system-only, JSON request bodies are capped, and local cleanup removes expired/used transient records.
+- Added Render/Supabase environment configuration, safe runtime health reporting, deployment notes, and the initial Supabase schema SQL with transactional inventory reservation support.

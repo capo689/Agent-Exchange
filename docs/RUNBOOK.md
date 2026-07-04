@@ -24,6 +24,18 @@ npm test
 
 The test suite currently covers policy, Tier 0 acknowledgment, severe-abuse blocking, Ed25519 challenge verification, idempotency, and trade transitions.
 
+## Hosted Environment Wiring
+
+Render owns production secrets through the `MAX` environment group. See [DEPLOY_RENDER_SUPABASE.md](DEPLOY_RENDER_SUPABASE.md) for the exact variable names and Supabase SQL setup.
+
+The health check exposes safe runtime booleans only:
+
+```bash
+curl -sS https://YOUR_RENDER_SERVICE.onrender.com/v1/health
+```
+
+Do not log or paste secret values while debugging deploys.
+
 ## Exercise Reference Flow
 
 With the API running:

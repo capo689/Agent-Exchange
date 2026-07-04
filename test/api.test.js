@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
+import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
 import { createApp, handleApiRequest } from '../src/server.js';
 import { createStore } from '../src/store.js';
 
@@ -69,6 +70,38 @@ test('policy exposes assurance tiers and severe abuse response', async () => {
     response.body.prohibitedCategories.some((item) => item.toLowerCase().includes('human trafficking'))
   );
   assert.ok(response.body.severeAbuseResponse.some((item) => item.includes('law enforcement')));
+});
+
+test('config accepts Render Supabase env group names without exposing secrets in status', () => {
+  const config = getConfig({
+    PORT: '9999',
+    MAX_JSON_BODY_BYTES: '2048',
+    SUPABASE_URL: 'https://example-ref.supabase.co',
+    SUPABASE_PUBLISHABLE_KEY: 'publishable',
+    SUPABASE_SECRET_KEY: 'secret',
+    DATABASE_URL: 'postgresql://user:pass@example.supabase.com:6543/postgres'
+  });
+  const status = getSafeRuntimeStatus({
+    SUPABASE_URL: 'https://example-ref.supabase.co',
+    SUPABASE_PUBLISHABLE_KEY: 'publishable',
+    SUPABASE_SECRET_KEY: 'secret',
+    DATABASE_URL: 'postgresql://user:pass@example.supabase.com:6543/postgres'
+  });
+
+  assert.equal(config.port, 9999);
+  assert.equal(config.maxJsonBodyBytes, 2048);
+  assert.equal(config.supabase.projectRef, 'example-ref');
+  assert.equal(config.supabase.jwksUrl, 'https://example-ref.supabase.co/auth/v1/.well-known/jwks.json');
+  assert.equal(config.storageBackend, 'postgres');
+  assert.deepEqual(status, {
+    storageBackend: 'postgres',
+    databaseConfigured: true,
+    supabaseConfigured: true,
+    supabaseJwksConfigured: true,
+    maxJsonBodyBytes: 1048576
+  });
+  assert.equal(JSON.stringify(status).includes('secret'), false);
+  assert.equal(JSON.stringify(status).includes('publishable'), false);
 });
 
 test('Tier 0 listings are allowed when they do not violate policy', async () => {

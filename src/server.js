@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { URL } from 'node:url';
+import { getConfig, getSafeRuntimeStatus } from './config.js';
 import { verifyEd25519Signature } from './crypto.js';
 import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
@@ -7,8 +8,9 @@ import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
 import { createStore } from './store.js';
 import { canTransition, getTransition } from './trades.js';
 
+const runtimeConfig = getConfig();
 const defaultStore = createStore(
-  process.env.DATA_DIR ? { filePath: `${process.env.DATA_DIR}/agent-exchange.json` } : {}
+  runtimeConfig.dataDir ? { filePath: `${runtimeConfig.dataDir}/agent-exchange.json` } : {}
 );
 
 function json(res, status, payload) {
@@ -27,7 +29,7 @@ async function readJson(req) {
 
   for await (const chunk of req) {
     totalBytes += chunk.length;
-    const maxJsonBodyBytes = Number(process.env.MAX_JSON_BODY_BYTES ?? 1_048_576);
+    const maxJsonBodyBytes = getConfig().maxJsonBodyBytes;
     if (totalBytes > maxJsonBodyBytes) {
       const error = new Error('Request body too large');
       error.code = 'REQUEST_BODY_TOO_LARGE';
@@ -214,7 +216,8 @@ export async function handleApiRequest(
       body: {
           ok: true,
           name: 'Agent Exchange',
-          version: '0.1.0'
+          version: '0.1.0',
+          runtime: getSafeRuntimeStatus()
       }
     };
   }
@@ -773,7 +776,7 @@ export function createApp({ store = defaultStore } = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const port = Number(process.env.PORT ?? 8787);
+  const port = getConfig().port;
   const server = createApp();
   server.listen(port, () => {
     console.log(`Agent Exchange API listening on http://localhost:${port}`);
