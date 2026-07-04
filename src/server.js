@@ -1,0 +1,781 @@
+import http from 'node:http';
+import { URL } from 'node:url';
+import { verifyEd25519Signature } from './crypto.js';
+import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
+import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
+import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
+import { createStore } from './store.js';
+import { canTransition, getTransition } from './trades.js';
+
+const defaultStore = createStore(
+  process.env.DATA_DIR ? { filePath: `${process.env.DATA_DIR}/agent-exchange.json` } : {}
+);
+
+function json(res, status, payload) {
+  const body = JSON.stringify(payload, null, 2);
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'x-request-id': payload.requestId ?? '',
+    'content-length': Buffer.byteLength(body)
+  });
+  res.end(body);
+}
+
+async function readJson(req) {
+  const chunks = [];
+  let totalBytes = 0;
+
+  for await (const chunk of req) {
+    totalBytes += chunk.length;
+    const maxJsonBodyBytes = Number(process.env.MAX_JSON_BODY_BYTES ?? 1_048_576);
+    if (totalBytes > maxJsonBodyBytes) {
+      const error = new Error('Request body too large');
+      error.code = 'REQUEST_BODY_TOO_LARGE';
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+
+  if (chunks.length === 0) {
+    return {};
+  }
+
+  const raw = Buffer.concat(chunks).toString('utf8');
+  if (!raw.trim()) {
+    return {};
+  }
+
+  return JSON.parse(raw);
+}
+
+function validateListingInput(input) {
+  const errors = [];
+
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  if (!input.sellerAgentId || typeof input.sellerAgentId !== 'string') errors.push('sellerAgentId is required');
+  if (!input.title || typeof input.title !== 'string') errors.push('title is required');
+  if (!input.category || typeof input.category !== 'string') errors.push('category is required');
+  if (!Number.isInteger(input.assuranceTier) || !(input.assuranceTier in assuranceTiers)) {
+    errors.push('assuranceTier must be one of 0, 1, 2, or 3');
+  }
+  if (!input.priceUsdc || !/^\d+(\.\d{1,6})?$/.test(String(input.priceUsdc))) {
+    errors.push('priceUsdc must be a decimal string');
+  }
+  if (input.inventoryType && !['unique', 'fungible'].includes(input.inventoryType)) {
+    errors.push('inventoryType must be unique or fungible');
+  }
+  if (input.inventoryType === 'fungible') {
+    if (!Number.isInteger(input.totalQuantity) || input.totalQuantity <= 0) {
+      errors.push('totalQuantity is required for fungible listings');
+    }
+    if (!input.unitPriceUsdc || !/^\d+(\.\d{1,6})?$/.test(String(input.unitPriceUsdc))) {
+      errors.push('unitPriceUsdc is required for fungible listings');
+    }
+  }
+
+  return errors;
+}
+
+function validateTradeInput(input) {
+  const errors = [];
+
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  if (!input.listingId || typeof input.listingId !== 'string') errors.push('listingId is required');
+  if (!input.buyerAgentId || typeof input.buyerAgentId !== 'string') errors.push('buyerAgentId is required');
+  if (input.quantity !== undefined && (!Number.isInteger(input.quantity) || input.quantity <= 0)) {
+    errors.push('quantity must be a positive integer');
+  }
+  if (input.unitPriceUsdc !== undefined && !/^\d+(\.\d{1,6})?$/.test(String(input.unitPriceUsdc))) {
+    errors.push('unitPriceUsdc must be a decimal string');
+  }
+
+  return errors;
+}
+
+function validateAgentInput(input) {
+  const errors = [];
+
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  if (!input.developerId || typeof input.developerId !== 'string') errors.push('developerId is required');
+  if (!input.name || typeof input.name !== 'string') errors.push('name is required');
+  if (input.publicKeyJwk && typeof input.publicKeyJwk !== 'object') {
+    errors.push('publicKeyJwk must be a JWK object');
+  }
+
+  return errors;
+}
+
+function validateOfferInput(input) {
+  const errors = [];
+
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  if (!input.listingId || typeof input.listingId !== 'string') errors.push('listingId is required');
+  if (!input.buyerAgentId || typeof input.buyerAgentId !== 'string') errors.push('buyerAgentId is required');
+  if (!Number.isInteger(input.quantity) || input.quantity <= 0) errors.push('quantity must be a positive integer');
+  if (!input.unitPriceUsdc || !/^\d+(\.\d{1,6})?$/.test(String(input.unitPriceUsdc))) {
+    errors.push('unitPriceUsdc must be a decimal string');
+  }
+  if (!input.expiresAt || Number.isNaN(Date.parse(input.expiresAt))) errors.push('expiresAt is required');
+  if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now()) {
+    errors.push('expiresAt must be in the future');
+  }
+
+  return errors;
+}
+
+function validateAutoAcceptRuleInput(input) {
+  const errors = [];
+
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  if (!input.actorAgentId || typeof input.actorAgentId !== 'string') errors.push('actorAgentId is required');
+  if (!input.minUnitPriceUsdc || !/^\d+(\.\d{1,6})?$/.test(String(input.minUnitPriceUsdc))) {
+    errors.push('minUnitPriceUsdc must be a decimal string');
+  }
+  if (!Number.isInteger(input.maxQuantityPerTrade) || input.maxQuantityPerTrade <= 0) {
+    errors.push('maxQuantityPerTrade must be a positive integer');
+  }
+  if (
+    !input.maxDailyAutoAcceptedUsdc ||
+    !/^\d+(\.\d{1,6})?$/.test(String(input.maxDailyAutoAcceptedUsdc))
+  ) {
+    errors.push('maxDailyAutoAcceptedUsdc must be a decimal string');
+  }
+  if (!Number.isInteger(input.offerExpiresWithinSeconds) || input.offerExpiresWithinSeconds <= 0) {
+    errors.push('offerExpiresWithinSeconds must be a positive integer');
+  }
+
+  return errors;
+}
+
+function getHeader(headers, name) {
+  return headers?.[name.toLowerCase()] ?? headers?.[name] ?? null;
+}
+
+function idempotencyKey(headers, body) {
+  return getHeader(headers, 'idempotency-key') ?? body.idempotencyKey ?? null;
+}
+
+function authorizeTradeAction({ rawAction, trade, actor, body }) {
+  if (rawAction === 'accept' || rawAction === 'deliver') {
+    return actor === trade.sellerAgentId
+      ? null
+      : {
+          error: 'seller_actor_required',
+          message: 'Only the seller agent can perform this trade action.'
+        };
+  }
+
+  if (rawAction === 'confirm') {
+    return actor === trade.buyerAgentId
+      ? null
+      : {
+          error: 'buyer_actor_required',
+          message: 'Only the buyer agent can confirm delivery.'
+        };
+  }
+
+  if (rawAction === 'dispute') {
+    return actor === trade.buyerAgentId || actor === trade.sellerAgentId
+      ? null
+      : {
+          error: 'trade_party_required',
+          message: 'Only a party to the trade can open a dispute.'
+        };
+  }
+
+  if (rawAction === 'refund') {
+    return actor === trade.sellerAgentId || body.actorRole === 'admin'
+      ? null
+      : {
+          error: 'seller_or_admin_required',
+          message: 'Only the seller or an admin can initiate this refund path.'
+        };
+  }
+
+  if (rawAction === 'resolve') {
+    return body.actorRole === 'admin'
+      ? null
+      : {
+          error: 'admin_actor_required',
+          message: 'Dispute resolution requires an admin actor in the current prototype.'
+        };
+  }
+
+  return null;
+}
+
+export async function handleApiRequest(
+  { method, pathname, body = {}, headers = {} },
+  store = defaultStore
+) {
+  if (method === 'GET' && pathname === '/v1/health') {
+    return {
+      status: 200,
+      body: {
+          ok: true,
+          name: 'Agent Exchange',
+          version: '0.1.0'
+      }
+    };
+  }
+
+  if (method === 'GET' && pathname === '/v1/policy') {
+    return { status: 200, body: getPolicyResponse() };
+  }
+
+  if (method === 'GET' && pathname === '/v1/categories') {
+    return {
+      status: 200,
+      body: {
+          categories: [
+            {
+              id: 'generic',
+              name: 'Generic permitted listing',
+              status: 'active',
+              assuranceTiers: [0, 1, 2, 3]
+            },
+            {
+              id: 'digital_good',
+              name: 'Digital good',
+              status: 'active',
+              assuranceTiers: [0, 1, 2, 3]
+            },
+            {
+              id: 'real_world_experience',
+              name: 'Real-world experience',
+              status: 'tiered',
+              assuranceTiers: [0, 1],
+              note: 'Tier 2 or 3 requires machine-verifiable or partner-confirmed fulfillment.'
+            }
+          ],
+          assuranceTiers: Object.values(assuranceTiers)
+      }
+    };
+  }
+
+  if (method === 'GET' && pathname === '/v1/listings') {
+    return { status: 200, body: { listings: store.listListings() } };
+  }
+
+  const listingOffersMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/offers$/);
+  if (method === 'GET' && listingOffersMatch) {
+    return {
+      status: 200,
+      body: {
+        offers: store.listOffers({ listingId: listingOffersMatch[1] })
+      }
+    };
+  }
+
+  const listingMarketMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/market$/);
+  if (method === 'GET' && listingMarketMatch) {
+    const market = store.getMarket(listingMarketMatch[1]);
+    if (!market) return { status: 404, body: { error: 'listing_not_found' } };
+    return { status: 200, body: { market } };
+  }
+
+  if (method === 'GET' && pathname === '/v1/markets') {
+    return { status: 200, body: { markets: store.listMarkets() } };
+  }
+
+  const listingAutoAcceptMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/auto-accept-rules$/);
+  if (method === 'GET' && listingAutoAcceptMatch) {
+    return {
+      status: 200,
+      body: {
+        autoAcceptRules: store.listAutoAcceptRules(listingAutoAcceptMatch[1])
+      }
+    };
+  }
+
+  if (method === 'POST' && listingAutoAcceptMatch) {
+    const listing = store.getListing(listingAutoAcceptMatch[1]);
+    if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
+
+    const errors = validateAutoAcceptRuleInput(body);
+    if (errors.length > 0) return { status: 400, body: { error: 'invalid_auto_accept_rule', errors } };
+    if (body.actorAgentId !== listing.sellerAgentId) {
+      return { status: 403, body: { error: 'seller_actor_required' } };
+    }
+
+    return store.withIdempotency(
+      {
+        scope: `POST /v1/listings/${listing.id}/auto-accept-rules`,
+        key: idempotencyKey(headers, body),
+        input: body
+      },
+      () => {
+        const rule = store.createAutoAcceptRule(listing, body);
+        return { status: 201, body: { autoAcceptRule: rule } };
+      }
+    );
+  }
+
+  if (method === 'GET' && pathname === '/v1/agents') {
+    return { status: 200, body: { agents: store.listAgents() } };
+  }
+
+  if (method === 'POST' && pathname === '/v1/maintenance/cleanup') {
+    if (body.actorRole !== 'admin') {
+      return { status: 403, body: { error: 'admin_actor_required' } };
+    }
+    return { status: 200, body: { cleanup: store.cleanupExpired() } };
+  }
+
+  if (method === 'POST' && pathname === '/v1/agents/register') {
+    const errors = validateAgentInput(body);
+
+    if (errors.length > 0) {
+      return { status: 400, body: { error: 'invalid_agent', errors } };
+    }
+
+    const agent = store.createAgent(body);
+    return { status: 201, body: { agent } };
+  }
+
+  const challengeMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/verify\/challenge$/);
+  if (method === 'POST' && challengeMatch) {
+    const agent = store.getAgent(challengeMatch[1]);
+    if (!agent) {
+      return { status: 404, body: { error: 'agent_not_found' } };
+    }
+    if (!agent.publicKeyJwk) {
+      return {
+        status: 409,
+        body: {
+          error: 'agent_key_required',
+          message: 'Register an Ed25519 publicKeyJwk before requesting a verification challenge.'
+        }
+      };
+    }
+
+    const challenge = store.createChallenge(agent.id);
+    return { status: 201, body: { challenge } };
+  }
+
+  const verifyMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/verify\/response$/);
+  if (method === 'POST' && verifyMatch) {
+    const agent = store.getAgent(verifyMatch[1]);
+    if (!agent) {
+      return { status: 404, body: { error: 'agent_not_found' } };
+    }
+
+    const challenge = store.getChallenge(body.challengeId);
+    if (!challenge || challenge.agentId !== agent.id) {
+      return { status: 404, body: { error: 'challenge_not_found' } };
+    }
+    if (challenge.usedAt) {
+      return { status: 409, body: { error: 'challenge_already_used' } };
+    }
+    if (Date.parse(challenge.expiresAt) <= Date.now()) {
+      return { status: 410, body: { error: 'challenge_expired' } };
+    }
+
+    const verified = verifyEd25519Signature({
+      publicKeyJwk: agent.publicKeyJwk,
+      message: challenge.canonical,
+      signatureBase64: body.signature
+    });
+
+    if (!verified) {
+      return { status: 401, body: { error: 'invalid_signature' } };
+    }
+
+    store.markChallengeUsed(challenge.id);
+    const session = store.createSession(agent.id);
+    return { status: 201, body: { session } };
+  }
+
+  if (method === 'POST' && pathname === '/v1/listings') {
+    const input = body;
+    const errors = validateListingInput(input);
+
+    if (errors.length > 0) {
+      return { status: 400, body: { error: 'invalid_listing', errors } };
+    }
+
+    if (!store.getAgent(input.sellerAgentId)) {
+      return {
+        status: 404,
+        body: {
+          error: 'seller_agent_not_found',
+          message: 'Listings must be tied to a registered seller agent.'
+        }
+      };
+    }
+
+    const screening = screenListing(input);
+    if (!screening.allowed) {
+      const moderationEvent = store.recordBlockedListingAttempt(input, screening);
+      logWarn('policy.blocked_listing', {
+        sellerAgentId: input.sellerAgentId,
+        category: input.category,
+        reportable: screening.reportable,
+        matches: screening.matches.map((match) => match.id),
+        moderationEventId: moderationEvent.id
+      });
+      return {
+        status: 422,
+        body: {
+          error: 'prohibited_listing',
+          message:
+            'This listing violates Agent Exchange policy and cannot be created. Severe abuse attempts may be preserved and reported to appropriate authorities.',
+          reportable: screening.reportable,
+          matches: screening.matches,
+          moderationEventId: moderationEvent.id
+        }
+      };
+    }
+
+    const listing = store.createListing(input, screening);
+    return { status: 201, body: { listing } };
+  }
+
+  if (method === 'POST' && pathname === '/v1/trades') {
+    const input = body;
+    const errors = validateTradeInput(input);
+
+    if (errors.length > 0) {
+      return { status: 400, body: { error: 'invalid_trade', errors } };
+    }
+
+    const listing = store.getListing(input.listingId);
+    if (!listing) {
+      return { status: 404, body: { error: 'listing_not_found' } };
+    }
+    if (!store.getAgent(input.buyerAgentId)) {
+      return {
+        status: 404,
+        body: {
+          error: 'buyer_agent_not_found',
+          message: 'Trades must be tied to a registered buyer agent.'
+        }
+      };
+    }
+    if (input.buyerAgentId === listing.sellerAgentId) {
+      return {
+        status: 409,
+        body: {
+          error: 'self_trade_blocked',
+          message: 'An agent cannot trade with itself.'
+        }
+      };
+    }
+
+    const tier = assuranceTiers[listing.assuranceTier];
+    if (tier.buyerAcknowledgementRequired && input.assuranceAcknowledgement !== true) {
+      return {
+        status: 409,
+        body: {
+          error: 'assurance_acknowledgement_required',
+          assuranceTier: tier,
+          message:
+            'This listing is not platform-verified. The buyer agent must explicitly acknowledge the assurance tier before trading.'
+        }
+      };
+    }
+
+    return store.withIdempotency(
+      {
+        scope: 'POST /v1/trades',
+        key: idempotencyKey(headers, input),
+        input
+      },
+      () => {
+        const result = store.createTrade(input, listing);
+        if (result.error) {
+          return { status: 409, body: result.error };
+        }
+        return { status: 201, body: { trade: result.trade, reservation: result.reservation } };
+      }
+    );
+  }
+
+  if (method === 'GET' && pathname === '/v1/trades') {
+    return { status: 200, body: { trades: store.listTrades() } };
+  }
+
+  if (method === 'GET' && pathname === '/v1/offers') {
+    return { status: 200, body: { offers: store.listOffers() } };
+  }
+
+  if (method === 'POST' && pathname === '/v1/offers') {
+    const errors = validateOfferInput(body);
+    if (errors.length > 0) return { status: 400, body: { error: 'invalid_offer', errors } };
+
+    const listing = store.getListing(body.listingId);
+    if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
+    if (!listing.acceptsOffers) return { status: 409, body: { error: 'listing_does_not_accept_offers' } };
+    if (!store.getAgent(body.buyerAgentId)) return { status: 404, body: { error: 'buyer_agent_not_found' } };
+    if (body.buyerAgentId === listing.sellerAgentId) {
+      return { status: 409, body: { error: 'self_trade_blocked' } };
+    }
+    if (assuranceTiers[listing.assuranceTier].buyerAcknowledgementRequired && body.assuranceAcknowledgement !== true) {
+      return { status: 409, body: { error: 'assurance_acknowledgement_required' } };
+    }
+
+    return store.withIdempotency(
+      {
+        scope: 'POST /v1/offers',
+        key: idempotencyKey(headers, body),
+        input: body
+      },
+      () => {
+        const offer = store.createOffer(
+          {
+            ...body,
+            actorAgentId: body.buyerAgentId
+          },
+          listing
+        );
+        const autoAccept = store.evaluateAutoAccept(offer);
+        return {
+          status: 201,
+          body: {
+            offer,
+            autoAccept
+          }
+        };
+      }
+    );
+  }
+
+  const offerActionMatch = pathname.match(/^\/v1\/offers\/([^/]+)\/([^/]+)$/);
+  if (method === 'POST' && offerActionMatch) {
+    const [, offerId, rawAction] = offerActionMatch;
+    const offer = store.getOffer(offerId);
+    if (!offer) return { status: 404, body: { error: 'offer_not_found' } };
+
+    const actor = body.actorAgentId;
+    if (!actor || typeof actor !== 'string') {
+      return { status: 400, body: { error: 'actorAgentId is required' } };
+    }
+
+    if (rawAction === 'counter') {
+      const errors = validateOfferInput({
+        ...body,
+        listingId: offer.listingId,
+        buyerAgentId: offer.buyerAgentId
+      });
+      if (errors.length > 0) return { status: 400, body: { error: 'invalid_counteroffer', errors } };
+      if (!actorCanCounter({ offer, actorAgentId: actor })) {
+        return { status: 403, body: { error: 'counterparty_actor_required' } };
+      }
+      return store.withIdempotency(
+        {
+          scope: `POST /v1/offers/${offerId}/counter`,
+          key: idempotencyKey(headers, body),
+          input: body
+        },
+        () => {
+          const counterOffer = store.counterOffer(offer, {
+            ...body,
+            actorAgentId: actor
+          });
+          return { status: 201, body: { offer: counterOffer } };
+        }
+      );
+    }
+
+    if (rawAction === 'accept') {
+      if (!actorCanAccept({ offer, actorAgentId: actor })) {
+        return { status: 403, body: { error: 'counterparty_actor_required' } };
+      }
+      return store.withIdempotency(
+        {
+          scope: `POST /v1/offers/${offerId}/accept`,
+          key: idempotencyKey(headers, body),
+          input: body
+        },
+        () => store.acceptOffer(offerId, actor)
+      );
+    }
+
+    if (rawAction === 'reject') {
+      if (!actorCanReject({ offer, actorAgentId: actor })) {
+        return { status: 403, body: { error: 'counterparty_actor_required' } };
+      }
+      const rejected = store.rejectOffer(offerId, actor);
+      return { status: 200, body: { offer: rejected } };
+    }
+
+    if (rawAction === 'withdraw') {
+      if (!actorCanWithdraw({ offer, actorAgentId: actor })) {
+        return { status: 403, body: { error: 'offer_creator_required' } };
+      }
+      const withdrawn = store.withdrawOffer(offerId, actor);
+      return { status: 200, body: { offer: withdrawn } };
+    }
+
+    if (rawAction === 'expire') {
+      if (
+        actor !== 'system' &&
+        actor !== offer.buyerAgentId &&
+        actor !== offer.sellerAgentId
+      ) {
+        return { status: 403, body: { error: 'trade_party_required' } };
+      }
+      const expired = store.expireOffer(offerId, actor);
+      return { status: 200, body: { offer: expired } };
+    }
+
+    return { status: 404, body: { error: 'unknown_offer_action' } };
+  }
+
+  const autoAcceptDisableMatch = pathname.match(/^\/v1\/auto-accept-rules\/([^/]+)\/disable$/);
+  if (method === 'POST' && autoAcceptDisableMatch) {
+    const actor = body.actorAgentId;
+    if (!actor || typeof actor !== 'string') {
+      return { status: 400, body: { error: 'actorAgentId is required' } };
+    }
+    const existingRule = store.getAutoAcceptRule(autoAcceptDisableMatch[1]);
+    if (!existingRule) return { status: 404, body: { error: 'auto_accept_rule_not_found' } };
+    if (existingRule.sellerAgentId !== actor) return { status: 403, body: { error: 'seller_actor_required' } };
+    const rule = store.disableAutoAcceptRule(autoAcceptDisableMatch[1], actor);
+    return { status: 200, body: { autoAcceptRule: rule } };
+  }
+
+  if (method === 'GET' && pathname === '/v1/inventory/reservations') {
+    return { status: 200, body: { reservations: store.listInventoryReservations() } };
+  }
+
+  const tradeActionMatch = pathname.match(/^\/v1\/trades\/([^/]+)\/([^/]+)$/);
+  if (method === 'POST' && tradeActionMatch) {
+    const [, tradeId, rawAction] = tradeActionMatch;
+    const action = rawAction === 'resolve' ? `resolve_${body.resolution}` : rawAction;
+    const transition = getTransition(action);
+
+    if (!transition) {
+      return { status: 404, body: { error: 'unknown_trade_action' } };
+    }
+
+    const trade = store.getTrade(tradeId);
+    if (!trade) {
+      return { status: 404, body: { error: 'trade_not_found' } };
+    }
+    if (!canTransition(trade, transition)) {
+      return {
+        status: 409,
+        body: {
+          error: 'invalid_trade_transition',
+          state: trade.state,
+          action: rawAction,
+          allowedFrom: transition.from
+        }
+      };
+    }
+
+    const actor = body.actorAgentId;
+    if (!actor || typeof actor !== 'string') {
+      return { status: 400, body: { error: 'actorAgentId is required' } };
+    }
+
+    const authzError = authorizeTradeAction({ rawAction, trade, actor, body });
+    if (authzError) {
+      return { status: 403, body: authzError };
+    }
+
+    return store.withIdempotency(
+      {
+        scope: `POST /v1/trades/${tradeId}/${rawAction}`,
+        key: idempotencyKey(headers, body),
+        input: body
+      },
+      () => {
+        const escrowEvent = transition.escrowType
+          ? store.createEscrowEvent({
+              tradeId,
+              type: transition.escrowType,
+              amountUsdc: trade.priceUsdc,
+              actor,
+              payload: {
+                note: 'Stub escrow adapter; replace with Commerce Payments integration.'
+              }
+            })
+          : null;
+
+        const updatedTrade = store.transitionTrade(tradeId, {
+          to: transition.to,
+          eventType: transition.eventType,
+          actor,
+          payload: {
+            proof: body.proof ?? null,
+            reason: body.reason ?? null,
+            resolution: body.resolution ?? null,
+            escrowEventId: escrowEvent?.id ?? null
+          }
+        });
+
+        return { status: 200, body: { trade: updatedTrade, escrowEvent } };
+      }
+    );
+  }
+
+  if (method === 'GET' && pathname === '/v1/escrow/events') {
+    return { status: 200, body: { escrowEvents: store.listEscrowEvents() } };
+  }
+
+  return { status: 404, body: { error: 'not_found' } };
+}
+
+export function createApp({ store = defaultStore } = {}) {
+  return http.createServer(async (req, res) => {
+    const requestId = createRequestId();
+    const startedAt = performance.now();
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const body = req.method === 'GET' ? {} : await readJson(req);
+      const result = await handleApiRequest(
+        {
+          method: req.method,
+          pathname: url.pathname,
+          body,
+          headers: req.headers
+        },
+        store
+      );
+      result.body.requestId = requestId;
+      logInfo('http.request', {
+        requestId,
+        method: req.method,
+        path: url.pathname,
+        status: result.status,
+        latencyMs: Math.round((performance.now() - startedAt) * 100) / 100
+      });
+      return json(res, result.status, result.body);
+    } catch (error) {
+      const status = error.code === 'REQUEST_BODY_TOO_LARGE'
+        ? 413
+        : error instanceof SyntaxError
+          ? 400
+          : 500;
+      logError('http.error', {
+        requestId,
+        method: req.method,
+        status,
+        latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        error
+      });
+      if (error.code === 'REQUEST_BODY_TOO_LARGE') {
+        return json(res, 413, { error: 'request_body_too_large', requestId });
+      }
+      if (error instanceof SyntaxError) {
+        return json(res, 400, { error: 'invalid_json', requestId });
+      }
+
+      return json(res, 500, {
+        error: 'internal_error',
+        message: error.message,
+        requestId
+      });
+    }
+  });
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const port = Number(process.env.PORT ?? 8787);
+  const server = createApp();
+  server.listen(port, () => {
+    console.log(`Agent Exchange API listening on http://localhost:${port}`);
+  });
+}

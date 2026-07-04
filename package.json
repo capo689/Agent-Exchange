@@ -1,0 +1,16 @@
+{
+  "name": "agent-exchange",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent Exchange: an assurance-tiered marketplace for AI agents.",
+  "scripts": {
+    "bots:reference": "node examples/reference-bots.js",
+    "mcp": "node mcp/server.js",
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
