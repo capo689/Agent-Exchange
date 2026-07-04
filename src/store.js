@@ -521,7 +521,7 @@ export function createStore({ filePath } = {}) {
       return record;
     },
 
-    withIdempotency({ scope, key, input }, fn) {
+    async withIdempotency({ scope, key, input }, fn) {
       if (!key) {
         return fn();
       }
@@ -543,7 +543,7 @@ export function createStore({ filePath } = {}) {
         return clone(existing.response);
       }
 
-      const response = fn();
+      const response = await fn();
       this.saveIdempotencyRecord(recordKey, fingerprint, clone(response));
       return response;
     },

@@ -8,7 +8,7 @@ Launch standard: FINISHER private beta gate first, then paid/live beta gate
 
 Agent Exchange currently has an executable local prototype for agent registration, assurance-tiered listings, Tier 0 buyer acknowledgement, policy blocking, trade state transitions, idempotency, role checks, stub escrow events, and local Negotiation v1: best offers, counteroffers, bid/ask spread for fungible inventory, quantity-aware partial fills, inventory reservations, and constrained auto-accept rules.
 
-This is not launchable yet. It is intentionally pre-production: no real database, no hosted staging, no enforced session auth on every route, no real escrow, no x402, no rate limiting, no CI, no backup/restore, and no monitoring service.
+This is not launchable yet. It is intentionally pre-production: the Postgres adapter still needs hosted Supabase verification, signed requests/scopes/RLS are not complete, there is no hosted staging, no real escrow, no x402, no rate limiting, no CI, no backup/restore, and no monitoring service.
 
 ## Project Identity
 
@@ -29,7 +29,7 @@ This is not launchable yet. It is intentionally pre-production: no real database
 |---|---|---|
 | API | Node.js standard `http` server in [src/server.js](../src/server.js) | Fastify or hardened Node API with middleware |
 | Runtime | Node 24+ | Node 24+ |
-| Persistence | In-memory / optional JSON file store in [src/store.js](../src/store.js) | Supabase Postgres with Drizzle migrations and RLS |
+| Persistence | In-memory / optional JSON file store plus Postgres adapter in [src/postgres-store.js](../src/postgres-store.js) | Supabase Postgres with migrations, RLS policies, and backup/restore drill |
 | Auth | Ed25519 challenge/response creates hashed bearer sessions; mutating agent routes require sessions | Signed requests + scoped route auth + developer ownership |
 | Payments/escrow | Stub escrow events | Commerce Payments on Base Sepolia, then mainnet after gates |
 | x402 | Not implemented | x402 middleware for paid endpoints |
@@ -49,7 +49,7 @@ Current store entities:
 |---|---|---|---|
 | agents | Accountable agent identity records | Memory/JSON | `developerId`, `agent.id`; no RLS yet |
 | challenges | One-time Ed25519 verification challenges | Memory/JSON | agent-scoped |
-| sessions | Short-lived session tokens | Memory/JSON | agent-scoped; not enforced yet |
+| sessions | Short-lived hashed bearer sessions | Memory/JSON/Postgres | agent-scoped; enforced on mutating routes |
 | listings | Marketplace listings with assurance tiers | Memory/JSON | seller agent |
 | offers | Buyer/seller negotiation records | Memory/JSON | buyer + seller agents |
 | offerEvents | Immutable offer/counter/accept/reject history | Memory/JSON | offer-linked |
@@ -105,7 +105,7 @@ Required controls before beta:
 | Auto-accept rules | Structured schema, dry-run, live mode, daily cap | Needs audit-log table, seller kill switch endpoint polish, RLS |
 | Trade actions | Bearer-session role checks for seller/buyer; admin token for maintenance/resolution | Needs scoped admin accounts and audit UI |
 | Policy abuse | Severe events marked reportable and logged | No evidence bundle/export flow yet |
-| Persistence | Optional local JSON | Not suitable for concurrent/hosted use |
+| Persistence | Optional local JSON plus initial Postgres adapter | Needs hosted verification, migration automation, RLS policies, and backup drill |
 | Logs | Structured request/error logs | No centralized storage, alerting, retention, or redaction tests |
 | Request bodies | HTTP JSON body limit | Needs rate limits and proxy-level limits |
 
@@ -133,7 +133,7 @@ Required controls before beta:
 ## P0 Before Private Hosted Beta
 
 - Extend bearer auth with signed requests, scopes, developer ownership, and RLS-backed authorization.
-- Replace JSON store with Supabase/Postgres and migrations.
+- Verify hosted Supabase/Postgres persistence and add migration automation.
 - Add RLS/resource ownership tests.
 - Add Negotiation v1 data model and transactional reservation tests. Local tests now cover direct-trade inventory reservation too; DB transaction tests still required.
 - Add rate limits.

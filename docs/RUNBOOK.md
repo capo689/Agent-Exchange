@@ -28,13 +28,19 @@ The test suite currently covers policy, Tier 0 acknowledgment, severe-abuse bloc
 
 Render owns production secrets through the `MAX` environment group. See [DEPLOY_RENDER_SUPABASE.md](DEPLOY_RENDER_SUPABASE.md) for the exact variable names and Supabase SQL setup.
 
-The health check exposes safe runtime booleans only:
+When `DATABASE_URL` is present, the API uses the Postgres store adapter. The health check exposes safe runtime booleans only:
 
 ```bash
 curl -sS https://YOUR_RENDER_SERVICE.onrender.com/v1/health
 ```
 
 Do not log or paste secret values while debugging deploys.
+
+Hosted reference flow:
+
+```bash
+AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run bots:reference
+```
 
 ## Exercise Reference Flow
 

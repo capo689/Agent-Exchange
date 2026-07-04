@@ -1,9 +1,9 @@
 # Next Build Steps
 
-1. Replace in-memory/store-file persistence with Supabase/Postgres. The first SQL schema is in [db/schema.sql](../db/schema.sql); the next code step is a Postgres store adapter.
+1. Run [db/schema.sql](../db/schema.sql) in Supabase, redeploy Render, and verify the Postgres adapter with the reference bot against the hosted URL.
 2. Extend auth beyond bearer sessions with signed requests, scopes, developer ownership, and RLS-backed authorization.
 3. Add Negotiation v1: best offer, counteroffers, bid/ask spread for fungible inventory, quantity-aware partial fills, and constrained auto-accept rules.
-4. Wire API writes to the Supabase transactional reservation function so accepted offers cannot oversell under concurrency.
+4. Add hosted DB concurrency tests around the Supabase transactional reservation function.
 5. Swap the escrow stub for a Commerce Payments adapter on Base Sepolia.
 6. Add x402 middleware around paid endpoints.
 7. Add admin dashboard views for moderation, trades, offers, auto-accept rules, inventory reservations, escrow events, and reportable abuse.

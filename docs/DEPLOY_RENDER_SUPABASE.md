@@ -42,6 +42,8 @@ Before the API uses Postgres persistence, run [db/schema.sql](../db/schema.sql) 
 
 This creates the first launch tables and the `reserve_listing_inventory` function. That function locks the listing row while reserving inventory, which is the production fix for concurrent partial fills and oversell prevention.
 
+When `DATABASE_URL` is present, the API starts with the Postgres store adapter. Without `DATABASE_URL`, local development uses memory or the optional JSON file store.
+
 ## Verify Wiring
 
 After deploy, check:
@@ -63,4 +65,8 @@ The `runtime` object should report:
 }
 ```
 
-The current API still uses the local store until the Postgres store adapter is implemented. The health response only confirms that Render environment wiring is present.
+After the schema is installed and Render is redeployed, run the reference bot against the Render URL to confirm the hosted Postgres flow:
+
+```bash
+AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run bots:reference
+```

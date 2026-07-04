@@ -5,13 +5,14 @@ import { verifyEd25519Signature } from './crypto.js';
 import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
 import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
+import { createPostgresStore } from './postgres-store.js';
 import { createStore } from './store.js';
 import { canTransition, getTransition } from './trades.js';
 
 const runtimeConfig = getConfig();
-const defaultStore = createStore(
-  runtimeConfig.dataDir ? { filePath: `${runtimeConfig.dataDir}/agent-exchange.json` } : {}
-);
+const defaultStore = runtimeConfig.databaseUrl
+  ? createPostgresStore({ connectionString: runtimeConfig.databaseUrl })
+  : createStore(runtimeConfig.dataDir ? { filePath: `${runtimeConfig.dataDir}/agent-exchange.json` } : {});
 
 function json(res, status, payload) {
   const body = JSON.stringify(payload, null, 2);
@@ -167,7 +168,7 @@ function getBearerToken(headers) {
   return match ? match[1].trim() : null;
 }
 
-function authenticateAgent(headers, store) {
+async function authenticateAgent(headers, store) {
   const token = getBearerToken(headers);
   if (!token) {
     return {
@@ -181,7 +182,7 @@ function authenticateAgent(headers, store) {
     };
   }
 
-  const session = store.getSessionByToken(token);
+  const session = await store.getSessionByToken(token);
   if (!session) {
     return {
       error: {
@@ -194,7 +195,7 @@ function authenticateAgent(headers, store) {
     };
   }
 
-  const agent = store.getAgent(session.agentId);
+  const agent = await store.getAgent(session.agentId);
   if (!agent || agent.status !== 'active') {
     return {
       error: {
@@ -361,7 +362,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/listings') {
-    return { status: 200, body: { listings: store.listListings() } };
+    return { status: 200, body: { listings: await store.listListings() } };
   }
 
   const listingOffersMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/offers$/);
@@ -369,20 +370,20 @@ export async function handleApiRequest(
     return {
       status: 200,
       body: {
-        offers: store.listOffers({ listingId: listingOffersMatch[1] })
+        offers: await store.listOffers({ listingId: listingOffersMatch[1] })
       }
     };
   }
 
   const listingMarketMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/market$/);
   if (method === 'GET' && listingMarketMatch) {
-    const market = store.getMarket(listingMarketMatch[1]);
+    const market = await store.getMarket(listingMarketMatch[1]);
     if (!market) return { status: 404, body: { error: 'listing_not_found' } };
     return { status: 200, body: { market } };
   }
 
   if (method === 'GET' && pathname === '/v1/markets') {
-    return { status: 200, body: { markets: store.listMarkets() } };
+    return { status: 200, body: { markets: await store.listMarkets() } };
   }
 
   const listingAutoAcceptMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/auto-accept-rules$/);
@@ -390,16 +391,16 @@ export async function handleApiRequest(
     return {
       status: 200,
       body: {
-        autoAcceptRules: store.listAutoAcceptRules(listingAutoAcceptMatch[1])
+        autoAcceptRules: await store.listAutoAcceptRules(listingAutoAcceptMatch[1])
       }
     };
   }
 
   if (method === 'POST' && listingAutoAcceptMatch) {
-    const authResult = authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store);
     if (authResult.error) return authResult.error;
 
-    const listing = store.getListing(listingAutoAcceptMatch[1]);
+    const listing = await store.getListing(listingAutoAcceptMatch[1]);
     if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
 
     const errors = validateAutoAcceptRuleInput(body);
@@ -410,14 +411,14 @@ export async function handleApiRequest(
       return { status: 403, body: { error: 'seller_actor_required' } };
     }
 
-    return store.withIdempotency(
+    return await store.withIdempotency(
       {
         scope: `POST /v1/listings/${listing.id}/auto-accept-rules`,
         key: idempotencyKey(headers, body),
         input: { ...body, actorAgentId: authResult.auth.agentId }
       },
-      () => {
-        const rule = store.createAutoAcceptRule(listing, {
+      async () => {
+        const rule = await store.createAutoAcceptRule(listing, {
           ...body,
           actorAgentId: authResult.auth.agentId
         });
@@ -427,13 +428,13 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/agents') {
-    return { status: 200, body: { agents: store.listAgents() } };
+    return { status: 200, body: { agents: await store.listAgents() } };
   }
 
   if (method === 'POST' && pathname === '/v1/maintenance/cleanup') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
-    return { status: 200, body: { cleanup: store.cleanupExpired() } };
+    return { status: 200, body: { cleanup: await store.cleanupExpired() } };
   }
 
   if (method === 'POST' && pathname === '/v1/agents/register') {
@@ -443,13 +444,13 @@ export async function handleApiRequest(
       return { status: 400, body: { error: 'invalid_agent', errors } };
     }
 
-    const agent = store.createAgent(body);
+    const agent = await store.createAgent(body);
     return { status: 201, body: { agent } };
   }
 
   const challengeMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/verify\/challenge$/);
   if (method === 'POST' && challengeMatch) {
-    const agent = store.getAgent(challengeMatch[1]);
+    const agent = await store.getAgent(challengeMatch[1]);
     if (!agent) {
       return { status: 404, body: { error: 'agent_not_found' } };
     }
@@ -463,18 +464,18 @@ export async function handleApiRequest(
       };
     }
 
-    const challenge = store.createChallenge(agent.id);
+    const challenge = await store.createChallenge(agent.id);
     return { status: 201, body: { challenge } };
   }
 
   const verifyMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/verify\/response$/);
   if (method === 'POST' && verifyMatch) {
-    const agent = store.getAgent(verifyMatch[1]);
+    const agent = await store.getAgent(verifyMatch[1]);
     if (!agent) {
       return { status: 404, body: { error: 'agent_not_found' } };
     }
 
-    const challenge = store.getChallenge(body.challengeId);
+    const challenge = await store.getChallenge(body.challengeId);
     if (!challenge || challenge.agentId !== agent.id) {
       return { status: 404, body: { error: 'challenge_not_found' } };
     }
@@ -495,13 +496,13 @@ export async function handleApiRequest(
       return { status: 401, body: { error: 'invalid_signature' } };
     }
 
-    store.markChallengeUsed(challenge.id);
-    const session = store.createSession(agent.id);
+    await store.markChallengeUsed(challenge.id);
+    const session = await store.createSession(agent.id);
     return { status: 201, body: { session } };
   }
 
   if (method === 'POST' && pathname === '/v1/listings') {
-    const authResult = authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store);
     if (authResult.error) return authResult.error;
 
     const input = body;
@@ -514,7 +515,7 @@ export async function handleApiRequest(
     const actorError = requireFieldMatchesSession('sellerAgentId', input.sellerAgentId, authResult.auth);
     if (actorError) return actorError;
 
-    if (!store.getAgent(input.sellerAgentId)) {
+    if (!(await store.getAgent(input.sellerAgentId))) {
       return {
         status: 404,
         body: {
@@ -526,7 +527,7 @@ export async function handleApiRequest(
 
     const screening = screenListing(input);
     if (!screening.allowed) {
-      const moderationEvent = store.recordBlockedListingAttempt(input, screening);
+      const moderationEvent = await store.recordBlockedListingAttempt(input, screening);
       logWarn('policy.blocked_listing', {
         sellerAgentId: input.sellerAgentId,
         category: input.category,
@@ -547,12 +548,12 @@ export async function handleApiRequest(
       };
     }
 
-    const listing = store.createListing(input, screening);
+    const listing = await store.createListing(input, screening);
     return { status: 201, body: { listing } };
   }
 
   if (method === 'POST' && pathname === '/v1/trades') {
-    const authResult = authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store);
     if (authResult.error) return authResult.error;
 
     const input = body;
@@ -565,11 +566,11 @@ export async function handleApiRequest(
     const actorError = requireFieldMatchesSession('buyerAgentId', input.buyerAgentId, authResult.auth);
     if (actorError) return actorError;
 
-    const listing = store.getListing(input.listingId);
+    const listing = await store.getListing(input.listingId);
     if (!listing) {
       return { status: 404, body: { error: 'listing_not_found' } };
     }
-    if (!store.getAgent(input.buyerAgentId)) {
+    if (!(await store.getAgent(input.buyerAgentId))) {
       return {
         status: 404,
         body: {
@@ -601,14 +602,14 @@ export async function handleApiRequest(
       };
     }
 
-    return store.withIdempotency(
+    return await store.withIdempotency(
       {
         scope: 'POST /v1/trades',
         key: idempotencyKey(headers, input),
         input
       },
-      () => {
-        const result = store.createTrade(input, listing);
+      async () => {
+        const result = await store.createTrade(input, listing);
         if (result.error) {
           return { status: 409, body: result.error };
         }
@@ -618,15 +619,15 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/trades') {
-    return { status: 200, body: { trades: store.listTrades() } };
+    return { status: 200, body: { trades: await store.listTrades() } };
   }
 
   if (method === 'GET' && pathname === '/v1/offers') {
-    return { status: 200, body: { offers: store.listOffers() } };
+    return { status: 200, body: { offers: await store.listOffers() } };
   }
 
   if (method === 'POST' && pathname === '/v1/offers') {
-    const authResult = authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store);
     if (authResult.error) return authResult.error;
 
     const errors = validateOfferInput(body);
@@ -634,10 +635,10 @@ export async function handleApiRequest(
     const actorError = requireFieldMatchesSession('buyerAgentId', body.buyerAgentId, authResult.auth);
     if (actorError) return actorError;
 
-    const listing = store.getListing(body.listingId);
+    const listing = await store.getListing(body.listingId);
     if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
     if (!listing.acceptsOffers) return { status: 409, body: { error: 'listing_does_not_accept_offers' } };
-    if (!store.getAgent(body.buyerAgentId)) return { status: 404, body: { error: 'buyer_agent_not_found' } };
+    if (!(await store.getAgent(body.buyerAgentId))) return { status: 404, body: { error: 'buyer_agent_not_found' } };
     if (body.buyerAgentId === listing.sellerAgentId) {
       return { status: 409, body: { error: 'self_trade_blocked' } };
     }
@@ -645,21 +646,21 @@ export async function handleApiRequest(
       return { status: 409, body: { error: 'assurance_acknowledgement_required' } };
     }
 
-    return store.withIdempotency(
+    return await store.withIdempotency(
       {
         scope: 'POST /v1/offers',
         key: idempotencyKey(headers, body),
         input: { ...body, actorAgentId: authResult.auth.agentId }
       },
-      () => {
-        const offer = store.createOffer(
+      async () => {
+        const offer = await store.createOffer(
           {
             ...body,
             actorAgentId: authResult.auth.agentId
           },
           listing
         );
-        const autoAccept = store.evaluateAutoAccept(offer);
+        const autoAccept = await store.evaluateAutoAccept(offer);
         return {
           status: 201,
           body: {
@@ -673,11 +674,11 @@ export async function handleApiRequest(
 
   const offerActionMatch = pathname.match(/^\/v1\/offers\/([^/]+)\/([^/]+)$/);
   if (method === 'POST' && offerActionMatch) {
-    const authResult = authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store);
     if (authResult.error) return authResult.error;
 
     const [, offerId, rawAction] = offerActionMatch;
-    const offer = store.getOffer(offerId);
+    const offer = await store.getOffer(offerId);
     if (!offer) return { status: 404, body: { error: 'offer_not_found' } };
 
     const actorError = requireBodyActorMatchesSession(body, authResult.auth);
@@ -694,14 +695,14 @@ export async function handleApiRequest(
       if (!actorCanCounter({ offer, actorAgentId: actor })) {
         return { status: 403, body: { error: 'counterparty_actor_required' } };
       }
-      return store.withIdempotency(
+      return await store.withIdempotency(
         {
           scope: `POST /v1/offers/${offerId}/counter`,
           key: idempotencyKey(headers, body),
           input: { ...body, actorAgentId: actor }
         },
-        () => {
-          const counterOffer = store.counterOffer(offer, {
+        async () => {
+          const counterOffer = await store.counterOffer(offer, {
             ...body,
             actorAgentId: actor
           });
@@ -714,7 +715,7 @@ export async function handleApiRequest(
       if (!actorCanAccept({ offer, actorAgentId: actor })) {
         return { status: 403, body: { error: 'counterparty_actor_required' } };
       }
-      return store.withIdempotency(
+      return await store.withIdempotency(
         {
           scope: `POST /v1/offers/${offerId}/accept`,
           key: idempotencyKey(headers, body),
@@ -728,7 +729,7 @@ export async function handleApiRequest(
       if (!actorCanReject({ offer, actorAgentId: actor })) {
         return { status: 403, body: { error: 'counterparty_actor_required' } };
       }
-      const rejected = store.rejectOffer(offerId, actor);
+      const rejected = await store.rejectOffer(offerId, actor);
       return { status: 200, body: { offer: rejected } };
     }
 
@@ -736,7 +737,7 @@ export async function handleApiRequest(
       if (!actorCanWithdraw({ offer, actorAgentId: actor })) {
         return { status: 403, body: { error: 'offer_creator_required' } };
       }
-      const withdrawn = store.withdrawOffer(offerId, actor);
+      const withdrawn = await store.withdrawOffer(offerId, actor);
       return { status: 200, body: { offer: withdrawn } };
     }
 
@@ -744,7 +745,7 @@ export async function handleApiRequest(
       if (actor !== offer.buyerAgentId && actor !== offer.sellerAgentId) {
         return { status: 403, body: { error: 'trade_party_required' } };
       }
-      const expired = store.expireOffer(offerId, actor);
+      const expired = await store.expireOffer(offerId, actor);
       return { status: 200, body: { offer: expired } };
     }
 
@@ -753,21 +754,21 @@ export async function handleApiRequest(
 
   const autoAcceptDisableMatch = pathname.match(/^\/v1\/auto-accept-rules\/([^/]+)\/disable$/);
   if (method === 'POST' && autoAcceptDisableMatch) {
-    const authResult = authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store);
     if (authResult.error) return authResult.error;
     const actorError = requireBodyActorMatchesSession(body, authResult.auth);
     if (actorError) return actorError;
     const actor = authResult.auth.agentId;
 
-    const existingRule = store.getAutoAcceptRule(autoAcceptDisableMatch[1]);
+    const existingRule = await store.getAutoAcceptRule(autoAcceptDisableMatch[1]);
     if (!existingRule) return { status: 404, body: { error: 'auto_accept_rule_not_found' } };
     if (existingRule.sellerAgentId !== actor) return { status: 403, body: { error: 'seller_actor_required' } };
-    const rule = store.disableAutoAcceptRule(autoAcceptDisableMatch[1], actor);
+    const rule = await store.disableAutoAcceptRule(autoAcceptDisableMatch[1], actor);
     return { status: 200, body: { autoAcceptRule: rule } };
   }
 
   if (method === 'GET' && pathname === '/v1/inventory/reservations') {
-    return { status: 200, body: { reservations: store.listInventoryReservations() } };
+    return { status: 200, body: { reservations: await store.listInventoryReservations() } };
   }
 
   const tradeActionMatch = pathname.match(/^\/v1\/trades\/([^/]+)\/([^/]+)$/);
@@ -780,7 +781,7 @@ export async function handleApiRequest(
       return { status: 404, body: { error: 'unknown_trade_action' } };
     }
 
-    const trade = store.getTrade(tradeId);
+    const trade = await store.getTrade(tradeId);
     if (!trade) {
       return { status: 404, body: { error: 'trade_not_found' } };
     }
@@ -806,7 +807,7 @@ export async function handleApiRequest(
       if (adminError) return adminError;
       actor = 'admin';
     } else {
-      const authResult = authenticateAgent(headers, store);
+      const authResult = await authenticateAgent(headers, store);
       if (authResult.error) return authResult.error;
       const actorError = requireBodyActorMatchesSession(body, authResult.auth);
       if (actorError) return actorError;
@@ -818,15 +819,15 @@ export async function handleApiRequest(
       return { status: 403, body: authzError };
     }
 
-    return store.withIdempotency(
+    return await store.withIdempotency(
       {
         scope: `POST /v1/trades/${tradeId}/${rawAction}`,
         key: idempotencyKey(headers, body),
         input: { ...body, actorAgentId: actor }
       },
-      () => {
+      async () => {
         const escrowEvent = transition.escrowType
-          ? store.createEscrowEvent({
+          ? await store.createEscrowEvent({
               tradeId,
               type: transition.escrowType,
               amountUsdc: trade.priceUsdc,
@@ -837,7 +838,7 @@ export async function handleApiRequest(
             })
           : null;
 
-        const updatedTrade = store.transitionTrade(tradeId, {
+        const updatedTrade = await store.transitionTrade(tradeId, {
           to: transition.to,
           eventType: transition.eventType,
           actor,
@@ -855,7 +856,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/escrow/events') {
-    return { status: 200, body: { escrowEvents: store.listEscrowEvents() } };
+    return { status: 200, body: { escrowEvents: await store.listEscrowEvents() } };
   }
 
   return { status: 404, body: { error: 'not_found' } };
