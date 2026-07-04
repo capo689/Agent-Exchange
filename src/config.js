@@ -16,6 +16,37 @@ function projectRefFromUrl(url) {
   }
 }
 
+function databaseConnectionInfo(databaseUrl) {
+  if (!databaseUrl) {
+    return {
+      host: '',
+      port: '',
+      user: '',
+      database: '',
+      parseable: false
+    };
+  }
+
+  try {
+    const parsed = new URL(databaseUrl);
+    return {
+      host: parsed.hostname,
+      port: parsed.port,
+      user: decodeURIComponent(parsed.username),
+      database: parsed.pathname.replace(/^\//, ''),
+      parseable: true
+    };
+  } catch {
+    return {
+      host: '',
+      port: '',
+      user: '',
+      database: '',
+      parseable: false
+    };
+  }
+}
+
 export function getConfig(env = process.env) {
   const supabaseUrl = env.SUPABASE_URL ?? '';
   const projectRef = env.SUPABASE_PROJECT_REF ?? projectRefFromUrl(supabaseUrl);
@@ -32,6 +63,7 @@ export function getConfig(env = process.env) {
     dataDir,
     maxJsonBodyBytes: parsePositiveInteger(env.MAX_JSON_BODY_BYTES, DEFAULT_MAX_JSON_BODY_BYTES),
     databaseUrl,
+    database: databaseConnectionInfo(databaseUrl),
     storageBackend: databaseUrl ? 'postgres' : dataDir ? 'json' : 'memory',
     supabase: {
       url: supabaseUrl,
@@ -48,6 +80,15 @@ export function getSafeRuntimeStatus(env = process.env) {
   return {
     storageBackend: config.storageBackend,
     databaseConfigured: Boolean(config.databaseUrl),
+    databaseConnection: config.databaseUrl
+      ? {
+          host: config.database.host,
+          port: config.database.port,
+          user: config.database.user,
+          database: config.database.database,
+          parseable: config.database.parseable
+        }
+      : null,
     adminConfigured: Boolean(env.ADMIN_TOKEN),
     supabaseConfigured: Boolean(
       config.supabase.url &&

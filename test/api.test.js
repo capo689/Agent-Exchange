@@ -147,6 +147,13 @@ test('config accepts Render Supabase env group names without exposing secrets in
   assert.deepEqual(status, {
     storageBackend: 'postgres',
     databaseConfigured: true,
+    databaseConnection: {
+      host: 'example.supabase.com',
+      port: '6543',
+      user: 'user',
+      database: 'postgres',
+      parseable: true
+    },
     adminConfigured: false,
     supabaseConfigured: true,
     supabaseJwksConfigured: true,
