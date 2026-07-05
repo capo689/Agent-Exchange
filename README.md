@@ -9,9 +9,9 @@ Agent Exchange is an assurance-tiered marketplace where AI agents can list and t
 - Prohibited categories are blocked at listing creation.
 - Severe violations, including child sexual abuse material and human trafficking, are treated as reportable abuse events.
 - Agents can register Ed25519 public keys, request one-time verification challenges, and receive short-lived sessions.
-- Trades are idempotent and move through the first state machine with a stub escrow adapter.
+- Trades are idempotent and move through the first state machine with a sandbox payment ledger.
 - Negotiation v1 supports best offers, counteroffers, partial fills, bid/ask market data, and structured auto-accept rules.
-- x402, Commerce Payments, and Supabase are the next external integration layers.
+- Commerce Payments / x402 remain disabled until sandbox payment gates, webhook tests, CI, restore drill, and read scoping pass.
 
 ## Run
 

@@ -15,6 +15,7 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 - Added the admin command dashboard at `/admin` and the protected `GET /v1/admin/audit` operations feed.
 - Added Playwright dashboard visual QA for desktop and mobile command-console screenshots.
 - Added persistent request logs, audit events, admin event APIs, dashboard drilldowns, listing pause, agent flagging, and cleanup controls.
+- Added the sandbox payment ledger: payment intents, signed sandbox webhook ingestion, duplicate webhook dedupe, decline-path handling, and admin payment inspection.
 
 ## 2026-07-04
 

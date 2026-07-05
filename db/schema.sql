@@ -184,6 +184,33 @@ create table if not exists escrow_events (
   created_at timestamptz not null default now()
 );
 
+create table if not exists payment_intents (
+  id text primary key,
+  trade_id text not null references trades(id) on delete cascade,
+  escrow_event_id text references escrow_events(id) on delete set null,
+  action text not null check (action in ('AUTHORIZE', 'CAPTURE', 'REFUND')),
+  amount_usdc text not null,
+  actor text not null,
+  provider text not null,
+  provider_payment_id text not null unique,
+  status text not null check (status in ('PENDING', 'SUCCEEDED', 'DECLINED', 'FAILED')),
+  idempotency_key text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+
+create table if not exists payment_events (
+  id text primary key,
+  payment_intent_id text not null references payment_intents(id) on delete cascade,
+  provider text not null,
+  type text not null,
+  status text not null check (status in ('PENDING', 'SUCCEEDED', 'DECLINED', 'FAILED')),
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists reputation_events (
   id text primary key,
   agent_id text not null references agents(id) on delete cascade,
@@ -274,6 +301,10 @@ create index if not exists inventory_reservations_listing_id_idx on inventory_re
 create index if not exists trades_buyer_agent_id_idx on trades(buyer_agent_id);
 create index if not exists trades_seller_agent_id_idx on trades(seller_agent_id);
 create index if not exists escrow_events_trade_id_idx on escrow_events(trade_id);
+create index if not exists payment_intents_trade_id_idx on payment_intents(trade_id);
+create index if not exists payment_intents_status_idx on payment_intents(status);
+create index if not exists payment_intents_provider_payment_id_idx on payment_intents(provider_payment_id);
+create index if not exists payment_events_payment_intent_id_idx on payment_events(payment_intent_id);
 create index if not exists reputation_events_agent_id_idx on reputation_events(agent_id);
 create index if not exists reputation_events_trade_id_idx on reputation_events(trade_id);
 create index if not exists request_logs_created_at_idx on request_logs(created_at);
@@ -383,6 +414,8 @@ alter table inventory_reservations enable row level security;
 alter table auto_accept_rules enable row level security;
 alter table trades enable row level security;
 alter table escrow_events enable row level security;
+alter table payment_intents enable row level security;
+alter table payment_events enable row level security;
 alter table reputation_events enable row level security;
 alter table moderation_events enable row level security;
 alter table idempotency_records enable row level security;
@@ -429,6 +462,8 @@ begin
     'auto_accept_rules',
     'trades',
     'escrow_events',
+    'payment_intents',
+    'payment_events',
     'reputation_events',
     'moderation_events',
     'idempotency_records'

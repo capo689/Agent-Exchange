@@ -3,6 +3,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { addUsdc, compareUsdc, multiplyUnitPrice, subtractUsdc } from './money.js';
 import { isOfferOpen, offerStatuses, ruleMatchesOffer } from './negotiation.js';
+import {
+  isTerminalPaymentStatus,
+  paymentActionForEscrowType,
+  paymentStatuses,
+  sandboxStatusForOutcome
+} from './payments.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -33,6 +39,8 @@ function createInitialState() {
     autoAcceptRules: [],
     trades: [],
     escrowEvents: [],
+    paymentIntents: [],
+    paymentEvents: [],
     moderationEvents: [],
     reputationEvents: [],
     requestLogs: [],
@@ -111,6 +119,8 @@ export function createStore({ filePath } = {}) {
   const autoAcceptRules = mapById(state.autoAcceptRules ?? []);
   const trades = mapById(state.trades);
   const escrowEvents = mapById(state.escrowEvents);
+  const paymentIntents = mapById(state.paymentIntents ?? []);
+  const paymentEvents = mapById(state.paymentEvents ?? []);
   const moderationEvents = state.moderationEvents;
   const reputationEvents = mapById(state.reputationEvents ?? []);
   const requestLogs = mapById(state.requestLogs ?? []);
@@ -139,6 +149,8 @@ export function createStore({ filePath } = {}) {
           autoAcceptRules: [...autoAcceptRules.values()],
           trades: [...trades.values()],
           escrowEvents: [...escrowEvents.values()],
+          paymentIntents: [...paymentIntents.values()],
+          paymentEvents: [...paymentEvents.values()],
           moderationEvents,
           reputationEvents: [...reputationEvents.values()],
           requestLogs: [...requestLogs.values()],
@@ -187,6 +199,43 @@ export function createStore({ filePath } = {}) {
     };
     auditEvents.set(event.id, event);
     return event;
+  }
+
+  function createSandboxPaymentIntent({ trade, transition, action, amountUsdc }) {
+    const now = nowIso();
+    const status = sandboxStatusForOutcome(transition.paymentOutcome);
+    const intent = {
+      id: `pay_${randomUUID()}`,
+      tradeId: trade.id,
+      escrowEventId: null,
+      action,
+      amountUsdc,
+      actor: transition.actor,
+      provider: 'sandbox',
+      providerPaymentId: `sandbox_${randomUUID()}`,
+      status,
+      idempotencyKey: transition.paymentIdempotencyKey ?? null,
+      metadata: transition.paymentMetadata ?? transition.escrowPayload ?? {},
+      createdAt: now,
+      updatedAt: now,
+      completedAt: isTerminalPaymentStatus(status) ? now : null
+    };
+    paymentIntents.set(intent.id, intent);
+    recordAuditEvent({
+      type: 'payment.intent_created',
+      severity: status === paymentStatuses.succeeded ? 'info' : 'warn',
+      actorAgentId: transition.actor === 'admin' ? null : transition.actor,
+      resourceType: 'payment_intent',
+      resourceId: intent.id,
+      payload: {
+        tradeId: intent.tradeId,
+        action: intent.action,
+        amountUsdc: intent.amountUsdc,
+        provider: intent.provider,
+        status: intent.status
+      }
+    });
+    return intent;
   }
 
   function normalizeListingInventory(input) {
@@ -1130,18 +1179,46 @@ export function createStore({ filePath } = {}) {
       }
 
       const before = trade.state;
-      const escrowEvent = transition.escrowType
-        ? {
+      let paymentIntent = null;
+      let escrowEvent = null;
+      if (transition.escrowType) {
+        const action = paymentActionForEscrowType(transition.escrowType);
+        paymentIntent = createSandboxPaymentIntent({
+          trade,
+          transition,
+          action,
+          amountUsdc: transition.escrowAmountUsdc ?? trade.priceUsdc
+        });
+        if (paymentIntent.status !== paymentStatuses.succeeded) {
+          persist();
+          return {
+            error: {
+              status: paymentIntent.status === paymentStatuses.declined ? 402 : 502,
+              body: {
+                error: 'sandbox_payment_not_settled',
+                paymentStatus: paymentIntent.status,
+                paymentIntent
+              }
+            }
+          };
+        }
+        escrowEvent = {
             id: `esc_${randomUUID()}`,
             tradeId,
             type: transition.escrowType,
             amountUsdc: transition.escrowAmountUsdc ?? trade.priceUsdc,
             actor: transition.actor,
-            adapter: 'stub',
-            payload: transition.escrowPayload ?? {},
+            adapter: 'sandbox',
+            payload: {
+              ...(transition.escrowPayload ?? {}),
+              paymentIntentId: paymentIntent.id,
+              providerPaymentId: paymentIntent.providerPaymentId
+            },
             createdAt: nowIso()
-          }
-        : null;
+          };
+        paymentIntent.escrowEventId = escrowEvent.id;
+        paymentIntent.updatedAt = nowIso();
+      }
       if (escrowEvent) {
         escrowEvents.set(escrowEvent.id, escrowEvent);
         recordAuditEvent({
@@ -1154,7 +1231,8 @@ export function createStore({ filePath } = {}) {
             escrowEventId: escrowEvent.id,
             escrowType: escrowEvent.type,
             amountUsdc: escrowEvent.amountUsdc,
-            adapter: escrowEvent.adapter
+            adapter: escrowEvent.adapter,
+            paymentIntentId: paymentIntent?.id ?? null
           }
         });
       }
@@ -1166,7 +1244,8 @@ export function createStore({ filePath } = {}) {
         to: transition.to,
         payload: {
           ...(transition.payload ?? {}),
-          escrowEventId: escrowEvent?.id ?? transition.payload?.escrowEventId ?? null
+          escrowEventId: escrowEvent?.id ?? transition.payload?.escrowEventId ?? null,
+          paymentIntentId: paymentIntent?.id ?? transition.payload?.paymentIntentId ?? null
         }
       });
 
@@ -1222,11 +1301,86 @@ export function createStore({ filePath } = {}) {
         }
       });
       persist();
-      return { trade, escrowEvent };
+      return { trade, escrowEvent, paymentIntent };
     },
 
     listEscrowEvents() {
       return [...escrowEvents.values()];
+    },
+
+    getPaymentIntent(id) {
+      return paymentIntents.get(id) ?? null;
+    },
+
+    listPaymentIntents(filters = {}) {
+      return applyListQuery([...paymentIntents.values()], filters);
+    },
+
+    listPaymentEvents(filters = {}) {
+      return applyListQuery([...paymentEvents.values()], filters);
+    },
+
+    recordPaymentWebhookEvent(input) {
+      const existingEvent = paymentEvents.get(input.eventId);
+      if (existingEvent) {
+        return {
+          duplicate: true,
+          event: existingEvent,
+          paymentIntent: paymentIntents.get(existingEvent.paymentIntentId) ?? null
+        };
+      }
+
+      const paymentIntent = paymentIntents.get(input.paymentIntentId);
+      if (!paymentIntent) {
+        return { error: { status: 404, body: { error: 'payment_intent_not_found' } } };
+      }
+      if (!Object.values(paymentStatuses).includes(input.status)) {
+        return { error: { status: 400, body: { error: 'invalid_payment_status' } } };
+      }
+      if (
+        isTerminalPaymentStatus(paymentIntent.status) &&
+        paymentIntent.status !== input.status
+      ) {
+        return {
+          error: {
+            status: 409,
+            body: {
+              error: 'payment_status_conflict',
+              currentStatus: paymentIntent.status,
+              requestedStatus: input.status
+            }
+          }
+        };
+      }
+
+      const now = nowIso();
+      const event = {
+        id: input.eventId,
+        paymentIntentId: paymentIntent.id,
+        provider: 'sandbox',
+        type: input.type ?? 'sandbox.payment_status',
+        status: input.status,
+        payload: input.payload ?? {},
+        createdAt: now
+      };
+      paymentEvents.set(event.id, event);
+      paymentIntent.status = input.status;
+      paymentIntent.updatedAt = now;
+      paymentIntent.completedAt = isTerminalPaymentStatus(input.status) ? now : paymentIntent.completedAt;
+      recordAuditEvent({
+        type: 'payment.webhook_received',
+        severity: input.status === paymentStatuses.succeeded ? 'info' : 'warn',
+        resourceType: 'payment_intent',
+        resourceId: paymentIntent.id,
+        payload: {
+          eventId: event.id,
+          status: event.status,
+          provider: event.provider,
+          duplicate: false
+        }
+      });
+      persist();
+      return { duplicate: false, event, paymentIntent };
     },
 
     listModerationEvents() {

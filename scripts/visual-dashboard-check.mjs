@@ -21,6 +21,8 @@ const sampleAudit = {
     offers: 119,
     trades: 76,
     escrowEvents: 154,
+    paymentIntents: 154,
+    paymentEvents: 24,
     reputationEvents: 203
   },
   breakdowns: {
@@ -41,8 +43,16 @@ const sampleAudit = {
       { agentId: 'agt_labeler_pool_4401', delta: -3, previousScore: 47, newScore: 44, reason: 'TRADE_REFUNDED', createdAt: new Date(Date.now() - 180000).toISOString() }
     ],
     escrowEvents: [
-      { tradeId: 'trd_79db2a23-a19b-443a-b333-cb8170a77190', type: 'capture', amountUsdc: '19.840000', adapter: 'stub', createdAt: new Date().toISOString() },
-      { tradeId: 'trd_ea69e8e1-2214-4012-a25a-5dab881e62df', type: 'fund', amountUsdc: '84.120000', adapter: 'stub', createdAt: new Date(Date.now() - 120000).toISOString() }
+      { tradeId: 'trd_79db2a23-a19b-443a-b333-cb8170a77190', type: 'CAPTURE_STUB', amountUsdc: '19.840000', adapter: 'sandbox', createdAt: new Date().toISOString() },
+      { tradeId: 'trd_ea69e8e1-2214-4012-a25a-5dab881e62df', type: 'AUTHORIZE_STUB', amountUsdc: '84.120000', adapter: 'sandbox', createdAt: new Date(Date.now() - 120000).toISOString() }
+    ],
+    paymentIntents: [
+      { id: 'pay_authorize_001', tradeId: 'trd_ea69e8e1-2214-4012-a25a-5dab881e62df', action: 'AUTHORIZE', amountUsdc: '84.120000', status: 'SUCCEEDED', createdAt: new Date(Date.now() - 120000).toISOString() },
+      { id: 'pay_capture_001', tradeId: 'trd_79db2a23-a19b-443a-b333-cb8170a77190', action: 'CAPTURE', amountUsdc: '19.840000', status: 'SUCCEEDED', createdAt: new Date().toISOString() },
+      { id: 'pay_declined_001', tradeId: 'trd_declined_0001', action: 'AUTHORIZE', amountUsdc: '11.000000', status: 'DECLINED', createdAt: new Date(Date.now() - 200000).toISOString() }
+    ],
+    paymentEvents: [
+      { id: 'evt_sandbox_001', paymentIntentId: 'pay_capture_001', type: 'sandbox.payment_succeeded', status: 'SUCCEEDED', createdAt: new Date(Date.now() - 30000).toISOString() }
     ],
     moderationEvents: [
       { type: 'policy.blocked_listing', reportable: true, createdAt: new Date(Date.now() - 80000).toISOString() },

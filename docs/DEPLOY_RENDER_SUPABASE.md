@@ -21,6 +21,8 @@ RATE_LIMIT_READ_MAX_REQUESTS=300
 RATE_LIMIT_WRITE_MAX_REQUESTS=120
 RATE_LIMIT_AUTH_MAX_REQUESTS=30
 ADMIN_TOKEN=generate_a_long_random_admin_token
+PAYMENT_PROVIDER=sandbox
+PAYMENT_SANDBOX_WEBHOOK_SECRET=generate_a_long_random_sandbox_webhook_secret
 ```
 
 `DATABASE_URL` should be the Supabase shared pooler string for hosted Render runtime. For the current `max` project, the verified host is `aws-1-us-west-2.pooler.supabase.com` and the working port is `6543`.

@@ -6,6 +6,7 @@ import { getConfig, getSafeRuntimeStatus } from './config.js';
 import { verifyEd25519Signature } from './crypto.js';
 import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
+import { verifySandboxWebhookSignature } from './payments.js';
 import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
 import { createPostgresStore } from './postgres-store.js';
 import { createRateLimiter } from './rate-limit.js';
@@ -448,6 +449,19 @@ function authorizeTradeAction({ rawAction, trade, actor, body }) {
   return null;
 }
 
+function validateSandboxWebhookInput(input) {
+  const errors = [];
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  if (!input.eventId || typeof input.eventId !== 'string') errors.push('eventId is required');
+  if (!input.paymentIntentId || typeof input.paymentIntentId !== 'string') {
+    errors.push('paymentIntentId is required');
+  }
+  if (!['PENDING', 'SUCCEEDED', 'DECLINED', 'FAILED'].includes(input.status)) {
+    errors.push('status must be PENDING, SUCCEEDED, DECLINED, or FAILED');
+  }
+  return errors;
+}
+
 export async function handleApiRequest(
   { method, pathname, body = {}, headers = {}, query = {} },
   store = defaultStore
@@ -601,6 +615,8 @@ export async function handleApiRequest(
       offers,
       trades,
       escrowEvents,
+      paymentIntents,
+      paymentEvents,
       moderationEvents,
       reputationEvents,
       auditEvents,
@@ -611,6 +627,8 @@ export async function handleApiRequest(
       store.listOffers({ limit: dashboardLimit, offset: 0 }),
       store.listTrades({ limit: dashboardLimit, offset: 0 }),
       store.listEscrowEvents(),
+      typeof store.listPaymentIntents === 'function' ? store.listPaymentIntents({ limit: dashboardLimit, offset: 0 }) : [],
+      typeof store.listPaymentEvents === 'function' ? store.listPaymentEvents({ limit: dashboardLimit, offset: 0 }) : [],
       store.listModerationEvents(),
       store.listReputationEvents(),
       typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 100, offset: 0 }) : [],
@@ -628,6 +646,8 @@ export async function handleApiRequest(
           offers: offers.length,
           trades: trades.length,
           escrowEvents: escrowEvents.length,
+          paymentIntents: paymentIntents.length,
+          paymentEvents: paymentEvents.length,
           moderationEvents: moderationEvents.length,
           reputationEvents: reputationEvents.length,
           auditEvents: auditEvents.length,
@@ -638,6 +658,7 @@ export async function handleApiRequest(
           listingsByAssuranceTier: countBy(listings, 'assuranceTier'),
           offersByStatus: countBy(offers, 'status'),
           tradesByState: countBy(trades, 'state'),
+          paymentIntentsByStatus: countBy(paymentIntents, 'status'),
           requestLogsByStatus: countBy(requestLogs, 'status'),
           auditEventsBySeverity: countBy(auditEvents, 'severity')
         },
@@ -645,6 +666,8 @@ export async function handleApiRequest(
           trades: recent(trades),
           reputationEvents: recent(reputationEvents),
           escrowEvents: recent(escrowEvents),
+          paymentIntents: recent(paymentIntents),
+          paymentEvents: recent(paymentEvents),
           moderationEvents: recent(moderationEvents),
           auditEvents: recent(auditEvents),
           requestLogs: recent(requestLogs)
@@ -679,6 +702,69 @@ export async function handleApiRequest(
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
     return { status: 200, body: { moderationEvents: await store.listModerationEvents() } };
+  }
+
+  if (method === 'GET' && pathname === '/v1/admin/payments') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const intentQuery = parseListQuery(query, {
+      tradeId: {},
+      action: {},
+      provider: {},
+      status: {}
+    });
+    if (intentQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: intentQuery.errors } };
+    return {
+      status: 200,
+      body: {
+        ...paginatedBody('paymentIntents', await store.listPaymentIntents(intentQuery.filters), intentQuery.filters),
+        paymentEvents: await store.listPaymentEvents({ limit: 100, offset: 0 })
+      }
+    };
+  }
+
+  const adminPaymentMatch = pathname.match(/^\/v1\/admin\/payments\/([^/]+)$/);
+  if (method === 'GET' && adminPaymentMatch) {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const paymentIntent = await store.getPaymentIntent(adminPaymentMatch[1]);
+    if (!paymentIntent) return { status: 404, body: { error: 'payment_intent_not_found' } };
+    return {
+      status: 200,
+      body: {
+        paymentIntent,
+        paymentEvents: await store.listPaymentEvents({ paymentIntentId: paymentIntent.id, limit: 100, offset: 0 })
+      }
+    };
+  }
+
+  if (method === 'POST' && pathname === '/v1/payments/sandbox/webhook') {
+    const errors = validateSandboxWebhookInput(body);
+    if (errors.length > 0) return { status: 400, body: { error: 'invalid_sandbox_webhook', errors } };
+
+    const secret = process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET;
+    if (secret) {
+      const signature = getHeader(headers, 'x-sandbox-payment-signature');
+      if (!verifySandboxWebhookSignature({ secret, payload: body, signature })) {
+        return { status: 401, body: { error: 'invalid_payment_webhook_signature' } };
+      }
+    } else {
+      const adminError = requireAdmin(headers);
+      if (adminError) return adminError;
+    }
+
+    const result = await store.recordPaymentWebhookEvent({
+      eventId: body.eventId,
+      paymentIntentId: body.paymentIntentId,
+      status: body.status,
+      type: body.type ?? 'sandbox.payment_status',
+      payload: body.payload ?? {}
+    });
+    if (result.error) return result.error;
+    return {
+      status: result.duplicate ? 200 : 202,
+      body: result
+    };
   }
 
   const adminInspectMatch = pathname.match(/^\/v1\/admin\/inspect\/(agents|listings|offers|trades)\/([^/]+)$/);
@@ -1191,8 +1277,14 @@ export async function handleApiRequest(
           eventType: transition.eventType,
           actor,
           escrowAmountUsdc: trade.priceUsdc,
+          paymentOutcome: body.sandboxPaymentOutcome ?? body.paymentOutcome ?? 'succeeded',
+          paymentIdempotencyKey: idempotencyKey(headers, body),
+          paymentMetadata: {
+            route: `POST /v1/trades/${tradeId}/${rawAction}`,
+            sandbox: true
+          },
           escrowPayload: {
-            note: 'Stub escrow adapter; replace with Commerce Payments integration.'
+            note: 'Sandbox payment adapter; replace with Commerce Payments integration after sandbox gates.'
           },
           payload: {
             proof: body.proof ?? null,
@@ -1208,7 +1300,8 @@ export async function handleApiRequest(
           status: 200,
           body: {
             trade: transitionResult.trade,
-            escrowEvent: transitionResult.escrowEvent
+            escrowEvent: transitionResult.escrowEvent,
+            paymentIntent: transitionResult.paymentIntent
           }
         };
       }

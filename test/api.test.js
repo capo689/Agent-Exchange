@@ -6,6 +6,7 @@ import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
 import { createRateLimiter } from '../src/rate-limit.js';
 import { createApp, handleApiRequest } from '../src/server.js';
 import { createStore } from '../src/store.js';
+import { signSandboxWebhookPayload } from '../src/payments.js';
 import { getTransition } from '../src/trades.js';
 
 process.env.ADMIN_TOKEN ??= 'test-admin-token';
@@ -179,6 +180,10 @@ test('config accepts Render Supabase env group names without exposing secrets in
     adminConfigured: false,
     supabaseConfigured: true,
     supabaseJwksConfigured: true,
+    payment: {
+      provider: 'sandbox',
+      sandboxWebhookConfigured: false
+    },
     maxJsonBodyBytes: 1048576,
     rateLimit: {
       enabled: true,
@@ -455,6 +460,9 @@ test('trade transitions create escrow events and reject invalid state jumps', as
   assert.equal(accepted.status, 200);
   assert.equal(accepted.body.trade.state, 'FUNDED');
   assert.equal(accepted.body.escrowEvent.type, 'AUTHORIZE_STUB');
+  assert.equal(accepted.body.paymentIntent.action, 'AUTHORIZE');
+  assert.equal(accepted.body.paymentIntent.status, 'SUCCEEDED');
+  assert.equal(accepted.body.escrowEvent.adapter, 'sandbox');
 
   const delivered = await client.post(`/v1/trades/${offer.body.trade.id}/deliver`, {
     actorAgentId: seller.id,
@@ -469,6 +477,7 @@ test('trade transitions create escrow events and reject invalid state jumps', as
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.body.trade.state, 'CAPTURED');
   assert.equal(confirmed.body.escrowEvent.type, 'CAPTURE_STUB');
+  assert.equal(confirmed.body.paymentIntent.action, 'CAPTURE');
 });
 
 test('stale trade transition recheck prevents split escrow writes', async () => {
@@ -515,8 +524,93 @@ test('stale trade transition recheck prevents split escrow writes', async () => 
 
   assert.equal(confirmed.trade.state, 'CAPTURED');
   assert.equal(confirmed.escrowEvent.type, 'CAPTURE_STUB');
+  assert.equal(confirmed.paymentIntent.status, 'SUCCEEDED');
   assert.equal(staleRefund.error.status, 409);
   assert.equal(escrowEvents.some((event) => event.type === 'REFUND_STUB'), false);
+});
+
+test('sandbox payment decline leaves trade state unchanged and skips escrow event', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const created = await client.post('/v1/listings', {
+    sellerAgentId: seller.id,
+    title: 'Declined payment listing',
+    description: 'Funding should fail in sandbox.',
+    category: 'digital_good',
+    assuranceTier: 0,
+    priceUsdc: '12.00'
+  });
+  const offered = await client.post('/v1/trades', {
+    listingId: created.body.listing.id,
+    buyerAgentId: buyer.id,
+    assuranceAcknowledgement: true
+  });
+  const declined = await client.post(`/v1/trades/${offered.body.trade.id}/accept`, {
+    actorAgentId: seller.id,
+    sandboxPaymentOutcome: 'declined'
+  });
+  const fetchedTrade = await client.get(`/v1/trades/${offered.body.trade.id}`);
+  const payments = await client.adminGet('/v1/admin/payments', { status: 'DECLINED' });
+  const escrowEvents = await client.store.listEscrowEvents();
+
+  assert.equal(declined.status, 402);
+  assert.equal(declined.body.error, 'sandbox_payment_not_settled');
+  assert.equal(declined.body.paymentIntent.status, 'DECLINED');
+  assert.equal(fetchedTrade.body.trade.state, 'OFFER_MADE');
+  assert.equal(payments.status, 200);
+  assert.equal(payments.body.paymentIntents.some((intent) => intent.id === declined.body.paymentIntent.id), true);
+  assert.equal(escrowEvents.some((event) => event.tradeId === offered.body.trade.id), false);
+});
+
+test('sandbox payment webhooks require signatures and dedupe event ids', async () => {
+  const previousSecret = process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET;
+  process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET = 'sandbox-webhook-secret';
+  try {
+    const client = createClient();
+    const { seller, buyer } = await registerBuyerSeller(client);
+    const listing = await createFungibleListing(client, seller);
+    const trade = await client.post('/v1/trades', {
+      listingId: listing.id,
+      buyerAgentId: buyer.id,
+      quantity: 100,
+      assuranceAcknowledgement: true
+    });
+    const accepted = await client.post(`/v1/trades/${trade.body.trade.id}/accept`, {
+      actorAgentId: seller.id
+    });
+    const payload = {
+      eventId: 'evt_sandbox_1',
+      paymentIntentId: accepted.body.paymentIntent.id,
+      status: 'SUCCEEDED',
+      type: 'sandbox.payment_succeeded',
+      payload: { replayable: true }
+    };
+    const rejected = await client.postWithoutAuth('/v1/payments/sandbox/webhook', payload, {
+      'x-sandbox-payment-signature': 'bad'
+    });
+    const signature = signSandboxWebhookPayload(process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET, payload);
+    const first = await client.postWithoutAuth('/v1/payments/sandbox/webhook', payload, {
+      'x-sandbox-payment-signature': `sha256=${signature}`
+    });
+    const duplicate = await client.postWithoutAuth('/v1/payments/sandbox/webhook', payload, {
+      'x-sandbox-payment-signature': `sha256=${signature}`
+    });
+    const detail = await client.adminGet(`/v1/admin/payments/${accepted.body.paymentIntent.id}`);
+
+    assert.equal(rejected.status, 401);
+    assert.equal(first.status, 202);
+    assert.equal(first.body.duplicate, false);
+    assert.equal(duplicate.status, 200);
+    assert.equal(duplicate.body.duplicate, true);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.paymentEvents.length, 1);
+  } finally {
+    if (previousSecret === undefined) {
+      delete process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET;
+    } else {
+      process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET = previousSecret;
+    }
+  }
 });
 
 test('trade actions enforce buyer seller roles', async () => {

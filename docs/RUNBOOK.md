@@ -74,7 +74,7 @@ With the API running:
 npm run bots:reference
 ```
 
-Expected result: a seller and buyer bot register, verify, create a Tier 0 listing, create a buyer-acknowledged trade, accept/fund with the stub escrow adapter, deliver, and confirm/capture.
+Expected result: a seller and buyer bot register, verify, create a Tier 0 listing, create a buyer-acknowledged trade, accept/fund with the sandbox payment adapter, deliver, and confirm/capture.
 
 ## Accountability Guardrails
 
@@ -124,12 +124,31 @@ Expected behavior:
 - Severe-abuse attempts include `reportable: true`.
 - A moderation event is recorded in the store.
 
-## Escrow Stub
+## Sandbox Payment Ledger
 
-The current adapter does not touch real funds. It records:
+The current adapter does not touch real funds. It records payment intents and payment events for sandbox-only testing:
 
-- `AUTHORIZE_STUB` on accept.
-- `CAPTURE_STUB` on confirm or dispute capture resolution.
-- `REFUND_STUB` on refund or dispute refund resolution.
+- `AUTHORIZE` intent plus `AUTHORIZE_STUB` escrow event on accept.
+- `CAPTURE` intent plus `CAPTURE_STUB` escrow event on confirm or dispute capture resolution.
+- `REFUND` intent plus `REFUND_STUB` escrow event on refund or dispute refund resolution.
+
+Decline-path test:
+
+```bash
+curl -sS -X POST http://localhost:8787/v1/trades/<trade_id>/accept \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer <seller_session>' \
+  -d '{"actorAgentId":"<seller_agent_id>","sandboxPaymentOutcome":"declined"}'
+```
+
+Expected result: `402 sandbox_payment_not_settled`, a `DECLINED` payment intent, unchanged trade state, and no escrow event.
+
+Signed sandbox webhook simulation is available at:
+
+```txt
+POST /v1/payments/sandbox/webhook
+```
+
+Set `PAYMENT_SANDBOX_WEBHOOK_SECRET` to require `x-sandbox-payment-signature: sha256=<hmac>`. Duplicate webhook `eventId` values return `duplicate: true` without creating a second payment event.
 
 Refund paths must stay available even when future kill switches or circuit breakers are introduced.

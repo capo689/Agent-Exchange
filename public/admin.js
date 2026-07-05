@@ -11,6 +11,7 @@ const totals = [
   ['offers', 'Offers'],
   ['trades', 'Trades'],
   ['escrowEvents', 'Escrow'],
+  ['paymentIntents', 'Payments'],
   ['reputationEvents', 'Reputation']
 ];
 
@@ -132,6 +133,31 @@ function renderEscrow(events) {
       <span class="subtle">${esc(time(event.createdAt))}</span>
     </div>
   `).join('') : '<div class="empty">No escrow events</div>';
+}
+
+function renderPayments(intents, events) {
+  const rows = [
+    ...(intents ?? []).map((intent) => ({
+      kind: 'intent',
+      at: intent.createdAt,
+      label: `${intent.action} ${intent.amountUsdc} USDC`,
+      meta: `${intent.status} ${shortId(intent.tradeId)}`
+    })),
+    ...(events ?? []).map((event) => ({
+      kind: 'webhook',
+      at: event.createdAt,
+      label: event.type,
+      meta: `${event.status} ${shortId(event.paymentIntentId)}`
+    }))
+  ].sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? ''))).slice(0, 12);
+
+  $('payment-stream').innerHTML = rows.length ? rows.map((row) => `
+    <div class="event">
+      <strong>${esc(row.label)} <span class="chip">${esc(row.kind)}</span></strong>
+      <span class="subtle">${esc(row.meta)}</span>
+      <span class="subtle">${esc(time(row.at))}</span>
+    </div>
+  `).join('') : '<div class="empty">No payment activity</div>';
 }
 
 function renderModeration(events) {
@@ -266,6 +292,7 @@ function render(data) {
   renderTrades(data.recent.trades ?? []);
   renderReputation(data.recent.reputationEvents ?? []);
   renderEscrow(data.recent.escrowEvents ?? []);
+  renderPayments(data.recent.paymentIntents ?? [], data.recent.paymentEvents ?? []);
   renderModeration(data.recent.moderationEvents ?? []);
   renderOps(data.recent.auditEvents ?? []);
   renderRequests(data.recent.requestLogs ?? []);

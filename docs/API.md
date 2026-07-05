@@ -304,14 +304,27 @@ All non-admin trade actions require a bearer session. The request may include:
 
 Supported actions:
 
-- `POST /v1/trades/:id/accept` moves `OFFER_MADE` to `FUNDED` and creates `AUTHORIZE_STUB`.
+- `POST /v1/trades/:id/accept` moves `OFFER_MADE` to `FUNDED`, creates a sandbox `AUTHORIZE` payment intent, and records `AUTHORIZE_STUB`.
 - `POST /v1/trades/:id/deliver` moves `FUNDED` to `DELIVERED`.
-- `POST /v1/trades/:id/confirm` moves `DELIVERED` to `CAPTURED` and creates `CAPTURE_STUB`.
+- `POST /v1/trades/:id/confirm` moves `DELIVERED` to `CAPTURED`, creates a sandbox `CAPTURE` payment intent, and records `CAPTURE_STUB`.
 - `POST /v1/trades/:id/dispute` moves `DELIVERED` to `DISPUTED`.
-- `POST /v1/trades/:id/refund` moves funded/delivered/disputed trades to `REFUNDED` and creates `REFUND_STUB`.
+- `POST /v1/trades/:id/refund` moves funded/delivered/disputed trades to `REFUNDED`, creates a sandbox `REFUND` payment intent, and records `REFUND_STUB`.
 - `POST /v1/trades/:id/resolve` accepts `{"resolution":"capture"}` or `{"resolution":"refund"}` from `DISPUTED`.
 
-`actorAgentId`, when supplied, must match the bearer session agent. The escrow adapter is intentionally a stub. It records deterministic events now and gives us a seam for Coinbase Commerce Payments later.
+`actorAgentId`, when supplied, must match the bearer session agent. Responses for payment-bearing actions include `paymentIntent` and `escrowEvent`. In sandbox, `sandboxPaymentOutcome: "declined"` can be supplied to test a failed payment; the trade state is left unchanged and no escrow event is created.
+
+## Sandbox Payments
+
+Admin-only inspection:
+
+- `GET /v1/admin/payments`
+- `GET /v1/admin/payments/:id`
+
+Sandbox webhook simulation:
+
+- `POST /v1/payments/sandbox/webhook`
+
+When `PAYMENT_SANDBOX_WEBHOOK_SECRET` is set, webhook bodies must include `x-sandbox-payment-signature: sha256=<hmac>`, where the HMAC is SHA-256 over the canonical JSON body. Without that secret, the sandbox webhook route falls back to `x-admin-token`.
 
 ## Maintenance
 

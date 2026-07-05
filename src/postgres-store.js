@@ -3,6 +3,12 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { addUsdc, compareUsdc, multiplyUnitPrice, subtractUsdc } from './money.js';
 import { isOfferOpen, offerStatuses, ruleMatchesOffer } from './negotiation.js';
+import {
+  isTerminalPaymentStatus,
+  paymentActionForEscrowType,
+  paymentStatuses,
+  sandboxStatusForOutcome
+} from './payments.js';
 
 const { Pool } = pg;
 const bundledSupabaseCaUrl = new URL('../certs/supabase-prod-ca-2021.crt', import.meta.url);
@@ -276,6 +282,39 @@ function escrowEventFromRow(row) {
     amountUsdc: row.amount_usdc,
     actor: row.actor,
     adapter: row.adapter,
+    payload: row.payload ?? {},
+    createdAt: iso(row.created_at)
+  };
+}
+
+function paymentIntentFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tradeId: row.trade_id,
+    escrowEventId: row.escrow_event_id,
+    action: row.action,
+    amountUsdc: row.amount_usdc,
+    actor: row.actor,
+    provider: row.provider,
+    providerPaymentId: row.provider_payment_id,
+    status: row.status,
+    idempotencyKey: row.idempotency_key,
+    metadata: row.metadata ?? {},
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    completedAt: iso(row.completed_at)
+  };
+}
+
+function paymentEventFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    paymentIntentId: row.payment_intent_id,
+    provider: row.provider,
+    type: row.type,
+    status: row.status,
     payload: row.payload ?? {},
     createdAt: iso(row.created_at)
   };
@@ -1440,8 +1479,60 @@ export function createPostgresStore({ connectionString }) {
           };
         }
 
+        let paymentIntent = null;
         let escrowEvent = null;
         if (transition.escrowType) {
+          const action = paymentActionForEscrowType(transition.escrowType);
+          const paymentStatus = sandboxStatusForOutcome(transition.paymentOutcome);
+          const paymentIntentResult = await client.query(
+            `insert into payment_intents (
+              id, trade_id, action, amount_usdc, actor, provider, provider_payment_id,
+              status, idempotency_key, metadata, completed_at
+            ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+            returning *`,
+            [
+              `pay_${randomUUID()}`,
+              tradeId,
+              action,
+              transition.escrowAmountUsdc ?? trade.priceUsdc,
+              transition.actor,
+              'sandbox',
+              `sandbox_${randomUUID()}`,
+              paymentStatus,
+              transition.paymentIdempotencyKey ?? null,
+              jsonb(transition.paymentMetadata ?? transition.escrowPayload ?? {}),
+              isTerminalPaymentStatus(paymentStatus) ? nowIso() : null
+            ]
+          );
+          paymentIntent = paymentIntentFromRow(paymentIntentResult.rows[0]);
+          await insertAuditEvent({
+            type: 'payment.intent_created',
+            severity: paymentIntent.status === paymentStatuses.succeeded ? 'info' : 'warn',
+            actorAgentId: eventActor(transition.actor),
+            resourceType: 'payment_intent',
+            resourceId: paymentIntent.id,
+            payload: {
+              tradeId: paymentIntent.tradeId,
+              action: paymentIntent.action,
+              amountUsdc: paymentIntent.amountUsdc,
+              provider: paymentIntent.provider,
+              status: paymentIntent.status
+            }
+          }, client);
+          if (paymentIntent.status !== paymentStatuses.succeeded) {
+            await client.query('commit');
+            return {
+              error: {
+                status: paymentIntent.status === paymentStatuses.declined ? 402 : 502,
+                body: {
+                  error: 'sandbox_payment_not_settled',
+                  paymentStatus: paymentIntent.status,
+                  paymentIntent
+                }
+              }
+            };
+          }
+
           const escrowResult = await client.query(
             `insert into escrow_events (id, trade_id, type, amount_usdc, actor, adapter, payload)
              values ($1, $2, $3, $4, $5, $6, $7::jsonb)
@@ -1452,11 +1543,23 @@ export function createPostgresStore({ connectionString }) {
               transition.escrowType,
               transition.escrowAmountUsdc ?? trade.priceUsdc,
               transition.actor,
-              'stub',
-              jsonb(transition.escrowPayload ?? {})
+              'sandbox',
+              jsonb({
+                ...(transition.escrowPayload ?? {}),
+                paymentIntentId: paymentIntent.id,
+                providerPaymentId: paymentIntent.providerPaymentId
+              })
             ]
           );
           escrowEvent = escrowEventFromRow(escrowResult.rows[0]);
+          const updatedPaymentIntent = await client.query(
+            `update payment_intents
+             set escrow_event_id = $2, updated_at = now()
+             where id = $1
+             returning *`,
+            [paymentIntent.id, escrowEvent.id]
+          );
+          paymentIntent = paymentIntentFromRow(updatedPaymentIntent.rows[0]);
           await insertAuditEvent({
             type: 'escrow.event_created',
             severity: 'info',
@@ -1467,7 +1570,8 @@ export function createPostgresStore({ connectionString }) {
               escrowEventId: escrowEvent.id,
               escrowType: escrowEvent.type,
               amountUsdc: escrowEvent.amountUsdc,
-              adapter: escrowEvent.adapter
+              adapter: escrowEvent.adapter,
+              paymentIntentId: paymentIntent.id
             }
           }, client);
         }
@@ -1480,7 +1584,8 @@ export function createPostgresStore({ connectionString }) {
           to: transition.to,
           payload: {
             ...(transition.payload ?? {}),
-            escrowEventId: escrowEvent?.id ?? transition.payload?.escrowEventId ?? null
+            escrowEventId: escrowEvent?.id ?? transition.payload?.escrowEventId ?? null,
+            paymentIntentId: paymentIntent?.id ?? transition.payload?.paymentIntentId ?? null
           }
         };
         const events = [...trade.events, event];
@@ -1556,7 +1661,7 @@ export function createPostgresStore({ connectionString }) {
         }, client);
 
         await client.query('commit');
-        return { trade: updatedTrade, escrowEvent };
+        return { trade: updatedTrade, escrowEvent, paymentIntent };
       } catch (error) {
         await client.query('rollback');
         throw error;
@@ -1568,6 +1673,136 @@ export function createPostgresStore({ connectionString }) {
     async listEscrowEvents() {
       const { rows } = await query('select * from escrow_events order by created_at desc');
       return rows.map(escrowEventFromRow);
+    },
+
+    async getPaymentIntent(id) {
+      const { rows } = await query('select * from payment_intents where id = $1', [id]);
+      return paymentIntentFromRow(rows[0]);
+    },
+
+    async listPaymentIntents(filters = {}) {
+      const { rows } = await selectFiltered({
+        query,
+        table: 'payment_intents',
+        columns: {
+          tradeId: 'trade_id',
+          action: 'action',
+          provider: 'provider',
+          status: 'status'
+        },
+        filters
+      });
+      return rows.map(paymentIntentFromRow);
+    },
+
+    async listPaymentEvents(filters = {}) {
+      const { rows } = await selectFiltered({
+        query,
+        table: 'payment_events',
+        columns: {
+          paymentIntentId: 'payment_intent_id',
+          provider: 'provider',
+          status: 'status'
+        },
+        filters
+      });
+      return rows.map(paymentEventFromRow);
+    },
+
+    async recordPaymentWebhookEvent(input) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const existingEvent = await client.query('select * from payment_events where id = $1', [input.eventId]);
+        if (existingEvent.rows[0]) {
+          const paymentIntent = await client.query(
+            'select * from payment_intents where id = $1',
+            [existingEvent.rows[0].payment_intent_id]
+          );
+          await client.query('commit');
+          return {
+            duplicate: true,
+            event: paymentEventFromRow(existingEvent.rows[0]),
+            paymentIntent: paymentIntentFromRow(paymentIntent.rows[0])
+          };
+        }
+
+        const paymentIntentResult = await client.query(
+          'select * from payment_intents where id = $1 for update',
+          [input.paymentIntentId]
+        );
+        const paymentIntent = paymentIntentFromRow(paymentIntentResult.rows[0]);
+        if (!paymentIntent) {
+          await client.query('rollback');
+          return { error: { status: 404, body: { error: 'payment_intent_not_found' } } };
+        }
+        if (!Object.values(paymentStatuses).includes(input.status)) {
+          await client.query('rollback');
+          return { error: { status: 400, body: { error: 'invalid_payment_status' } } };
+        }
+        if (
+          isTerminalPaymentStatus(paymentIntent.status) &&
+          paymentIntent.status !== input.status
+        ) {
+          await client.query('rollback');
+          return {
+            error: {
+              status: 409,
+              body: {
+                error: 'payment_status_conflict',
+                currentStatus: paymentIntent.status,
+                requestedStatus: input.status
+              }
+            }
+          };
+        }
+
+        const eventResult = await client.query(
+          `insert into payment_events (id, payment_intent_id, provider, type, status, payload)
+           values ($1, $2, $3, $4, $5, $6::jsonb)
+           returning *`,
+          [
+            input.eventId,
+            paymentIntent.id,
+            'sandbox',
+            input.type ?? 'sandbox.payment_status',
+            input.status,
+            jsonb(input.payload ?? {})
+          ]
+        );
+        const updatedPaymentIntentResult = await client.query(
+          `update payment_intents
+           set status = $2, updated_at = now(),
+               completed_at = case when $3 then now() else completed_at end
+           where id = $1
+           returning *`,
+          [paymentIntent.id, input.status, isTerminalPaymentStatus(input.status)]
+        );
+        const updatedPaymentIntent = paymentIntentFromRow(updatedPaymentIntentResult.rows[0]);
+        await insertAuditEvent({
+          type: 'payment.webhook_received',
+          severity: input.status === paymentStatuses.succeeded ? 'info' : 'warn',
+          resourceType: 'payment_intent',
+          resourceId: updatedPaymentIntent.id,
+          payload: {
+            eventId: input.eventId,
+            status: input.status,
+            provider: 'sandbox',
+            duplicate: false
+          }
+        }, client);
+        await client.query('commit');
+        return {
+          duplicate: false,
+          event: paymentEventFromRow(eventResult.rows[0]),
+          paymentIntent: updatedPaymentIntent
+        };
+      } catch (error) {
+        await client.query('rollback');
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     async listModerationEvents() {

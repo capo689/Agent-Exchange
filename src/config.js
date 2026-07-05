@@ -61,6 +61,7 @@ export function getConfig(env = process.env) {
   const supabaseSecretKey = env.SUPABASE_SECRET_KEY ?? env.SUPABASE_SERVICE_ROLE_KEY ?? '';
   const databaseUrl = env.DATABASE_URL ?? '';
   const dataDir = env.DATA_DIR ?? '';
+  const paymentProvider = env.PAYMENT_PROVIDER ?? 'sandbox';
 
   return {
     port: parsePositiveInteger(env.PORT, DEFAULT_PORT),
@@ -74,6 +75,10 @@ export function getConfig(env = process.env) {
       authMaxRequests: parsePositiveInteger(env.RATE_LIMIT_AUTH_MAX_REQUESTS, DEFAULT_RATE_LIMIT_AUTH_MAX_REQUESTS)
     },
     databaseUrl,
+    payment: {
+      provider: paymentProvider,
+      sandboxWebhookConfigured: Boolean(env.PAYMENT_SANDBOX_WEBHOOK_SECRET)
+    },
     database: databaseConnectionInfo(databaseUrl),
     storageBackend: databaseUrl ? 'postgres' : dataDir ? 'json' : 'memory',
     supabase: {
@@ -108,6 +113,7 @@ export function getSafeRuntimeStatus(env = process.env) {
         config.supabase.secretKey
     ),
     supabaseJwksConfigured: Boolean(config.supabase.jwksUrl),
+    payment: config.payment,
     maxJsonBodyBytes: config.maxJsonBodyBytes,
     rateLimit: config.rateLimit
   };
