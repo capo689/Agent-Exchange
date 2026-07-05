@@ -153,9 +153,49 @@ Set `PAYMENT_SANDBOX_WEBHOOK_SECRET` to require `x-sandbox-payment-signature: sh
 
 Refund paths must stay available even when future kill switches or circuit breakers are introduced.
 
+## Smart Contract Escrow V1
+
+This is the non-custodial escrow path for trades. The API verifies events emitted by `contracts/AgentExchangeEscrow.sol`; the API itself never holds private keys or moves funds.
+
+Required environment:
+
+```txt
+ESCROW_CONTRACT_ADDRESS=<deployed_escrow_contract>
+ESCROW_NETWORK=eip155:84532
+ESCROW_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+ESCROW_PLATFORM_FEE_BPS=0
+ESCROW_RPC_URL=<optional_private_rpc_url>
+```
+
+Public config check:
+
+```bash
+curl -sS 'http://localhost:8787/v1/escrow/contract/config?tradeId=<trade_id>'
+```
+
+Expected flow:
+
+1. Buyer approves USDC to the escrow contract.
+2. Buyer calls `fund(tradeIdHash, tradeId, sellerWallet, amountAtomic)` on the contract.
+3. Buyer posts the funding transaction hash:
+
+```bash
+curl -sS -X POST http://localhost:8787/v1/trades/<trade_id>/fund-onchain \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer <buyer_session>' \
+  -d '{"actorAgentId":"<buyer_agent_id>","txHash":"0x..."}'
+```
+
+4. Seller delivers with the normal `deliver` action.
+5. Buyer calls `release(tradeIdHash)` on the contract, then posts the release transaction hash to `/v1/trades/<trade_id>/release-onchain`.
+
+Expected result: `SMART_CONTRACT_FUND` and `SMART_CONTRACT_RELEASE` escrow events, `smart_contract` payment intents, and trade state `CAPTURED`.
+
+Refund path: seller or arbitrator calls `refund(tradeIdHash)`, then seller/admin posts the transaction hash to `/v1/trades/<trade_id>/refund-onchain`.
+
 ## x402 Gateway Connection
 
-x402 is the planned Coinbase/CDP stablecoin payment rail. It is not the active trade escrow adapter yet. x402 exact payments settle immediately, so do not wire it into the accept/confirm escrow state machine until the product decision on hold/capture semantics is explicit.
+x402 is a Coinbase/CDP stablecoin payment rail for exact direct payments. It is useful for paid endpoints and probes, but it is not escrow because exact payments settle immediately rather than holding funds in a release/refund contract.
 
 Required testnet environment:
 

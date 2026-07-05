@@ -18,7 +18,10 @@ export const paymentStatuses = Object.freeze({
 export const paymentActionsByEscrowType = Object.freeze({
   AUTHORIZE_STUB: 'AUTHORIZE',
   CAPTURE_STUB: 'CAPTURE',
-  REFUND_STUB: 'REFUND'
+  REFUND_STUB: 'REFUND',
+  SMART_CONTRACT_FUND: 'AUTHORIZE',
+  SMART_CONTRACT_RELEASE: 'CAPTURE',
+  SMART_CONTRACT_REFUND: 'REFUND'
 });
 
 export function paymentActionForEscrowType(escrowType) {

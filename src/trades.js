@@ -27,6 +27,27 @@ export const tradeTransitions = Object.freeze({
     eventType: 'REFUNDED',
     escrowType: 'REFUND_STUB'
   },
+  fund_onchain: {
+    from: ['OFFER_MADE'],
+    to: 'FUNDED',
+    eventType: 'ONCHAIN_FUNDED',
+    escrowType: 'SMART_CONTRACT_FUND',
+    paymentProvider: 'smart_contract'
+  },
+  release_onchain: {
+    from: ['DELIVERED'],
+    to: 'CAPTURED',
+    eventType: 'ONCHAIN_RELEASED',
+    escrowType: 'SMART_CONTRACT_RELEASE',
+    paymentProvider: 'smart_contract'
+  },
+  refund_onchain: {
+    from: ['FUNDED', 'DELIVERED', 'DISPUTED'],
+    to: 'REFUNDED',
+    eventType: 'ONCHAIN_REFUNDED',
+    escrowType: 'SMART_CONTRACT_REFUND',
+    paymentProvider: 'smart_contract'
+  },
   resolve_capture: {
     from: ['DISPUTED'],
     to: 'CAPTURED',

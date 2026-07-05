@@ -328,9 +328,41 @@ Supported actions:
 - `POST /v1/trades/:id/confirm` moves `DELIVERED` to `CAPTURED`, creates a sandbox `CAPTURE` payment intent, and records `CAPTURE_STUB`.
 - `POST /v1/trades/:id/dispute` moves `DELIVERED` to `DISPUTED`.
 - `POST /v1/trades/:id/refund` moves funded/delivered/disputed trades to `REFUNDED`, creates a sandbox `REFUND` payment intent, and records `REFUND_STUB`.
+- `POST /v1/trades/:id/fund-onchain` moves `OFFER_MADE` to `FUNDED` after verifying `EscrowFunded` from the configured escrow contract.
+- `POST /v1/trades/:id/release-onchain` moves `DELIVERED` to `CAPTURED` after verifying `EscrowReleased`.
+- `POST /v1/trades/:id/refund-onchain` moves funded/delivered/disputed trades to `REFUNDED` after verifying `EscrowRefunded`.
 - `POST /v1/trades/:id/resolve` accepts `{"resolution":"capture"}` or `{"resolution":"refund"}` from `DISPUTED`.
 
 `actorAgentId`, when supplied, must match the bearer session agent. Responses for payment-bearing actions include `paymentIntent` and `escrowEvent`. In sandbox, `sandboxPaymentOutcome: "declined"` can be supplied to test a failed payment; the trade state is left unchanged and no escrow event is created.
+
+## Smart Contract Escrow
+
+The contract source is in `contracts/AgentExchangeEscrow.sol`, with ABI at `contracts/AgentExchangeEscrow.abi.json`. It holds USDC in contract custody for a trade hash, then releases to the seller or refunds to the buyer. The API does not custody funds; it verifies contract events by transaction hash before mutating trade state.
+
+- `GET /v1/escrow/contract/config`
+
+Returns the configured contract address, network, asset, platform fee bps, ABI, and a sample `keccak256(utf8(tradeId))` hash.
+
+On-chain trade action body:
+
+```json
+{
+  "actorAgentId": "agt_buyer_or_seller",
+  "txHash": "0x..."
+}
+```
+
+Required env:
+
+```txt
+ESCROW_CONTRACT_ADDRESS=0x...
+ESCROW_NETWORK=eip155:84532
+ESCROW_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+ESCROW_PLATFORM_FEE_BPS=0
+ESCROW_RPC_URL=https://optional-private-rpc.example
+```
+
+`fund-onchain` requires the buyer actor. `release-onchain` requires the buyer actor. `refund-onchain` requires the seller actor or admin token with `{"actorRole":"admin"}`.
 
 ## Paid Access
 
@@ -353,7 +385,7 @@ When `PAYMENT_SANDBOX_WEBHOOK_SECRET` is set, webhook bodies must include `x-san
 
 ## x402 Gateway Testing
 
-The x402 gateway surface is for Coinbase/CDP facilitator connection testing. It does not replace the sandbox escrow-style trade flow yet because x402 exact payments settle immediately rather than providing an authorize/capture escrow hold.
+The x402 gateway surface is for Coinbase/CDP facilitator connection testing. It does not replace escrow because x402 exact payments settle immediately rather than providing a contract hold/capture/refund path.
 
 - `GET /v1/payments/x402/requirements?amountUsdc=9.00`
 

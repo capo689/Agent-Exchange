@@ -8,6 +8,11 @@ import { verifyEd25519Signature } from './crypto.js';
 import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
 import { compareUsdc } from './money.js';
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
+import {
+  escrowContractAbi,
+  escrowTradeIdHash,
+  verifyEscrowContractEvent
+} from './escrow-contract.js';
 import { verifyOnchainUsdcTransfer } from './onchain.js';
 import {
   buildX402PaymentRequirements,
@@ -585,12 +590,12 @@ function authorizeTradeAction({ rawAction, trade, actor, body }) {
         };
   }
 
-  if (rawAction === 'confirm') {
+  if (rawAction === 'confirm' || rawAction === 'fund-onchain' || rawAction === 'release-onchain') {
     return actor === trade.buyerAgentId
       ? null
       : {
           error: 'buyer_actor_required',
-          message: 'Only the buyer agent can confirm delivery.'
+          message: 'Only the buyer agent can perform this trade action.'
         };
   }
 
@@ -604,6 +609,15 @@ function authorizeTradeAction({ rawAction, trade, actor, body }) {
   }
 
   if (rawAction === 'refund') {
+    return actor === trade.sellerAgentId || actor === 'admin'
+      ? null
+      : {
+          error: 'seller_or_admin_required',
+          message: 'Only the seller or an admin can initiate this refund path.'
+        };
+  }
+
+  if (rawAction === 'refund-onchain') {
     return actor === trade.sellerAgentId || actor === 'admin'
       ? null
       : {
@@ -1199,6 +1213,25 @@ export async function handleApiRequest(
       body: {
         provider: 'x402',
         paymentRequirements: result.paymentRequirements
+      }
+    };
+  }
+
+  if (method === 'GET' && pathname === '/v1/escrow/contract/config') {
+    const escrowContract = getConfig().payment.escrowContract;
+    const sampleTradeId = queryValue(query, 'tradeId') ?? 'sample_trade_id';
+    return {
+      status: 200,
+      body: {
+        configured: escrowContract.configured,
+        address: escrowContract.address,
+        network: escrowContract.network,
+        asset: escrowContract.asset,
+        platformFeeBps: escrowContract.platformFeeBps,
+        tradeIdHashAlgorithm: 'keccak256(utf8(tradeId))',
+        sampleTradeId,
+        sampleTradeIdHash: escrowTradeIdHash(sampleTradeId),
+        abi: escrowContractAbi
       }
     };
   }
@@ -1905,7 +1938,7 @@ export async function handleApiRequest(
   const tradeActionMatch = pathname.match(/^\/v1\/trades\/([^/]+)\/([^/]+)$/);
   if (method === 'POST' && tradeActionMatch) {
     const [, tradeId, rawAction] = tradeActionMatch;
-    const action = rawAction === 'resolve' ? `resolve_${body.resolution}` : rawAction;
+    const action = rawAction === 'resolve' ? `resolve_${body.resolution}` : rawAction.replaceAll('-', '_');
     const transition = getTransition(action);
 
     if (!transition) {
@@ -1933,7 +1966,7 @@ export async function handleApiRequest(
       const adminError = requireAdmin(headers);
       if (adminError) return adminError;
       actor = 'admin';
-    } else if (rawAction === 'refund' && body.actorRole === 'admin') {
+    } else if ((rawAction === 'refund' || rawAction === 'refund-onchain') && body.actorRole === 'admin') {
       const adminError = requireAdmin(headers);
       if (adminError) return adminError;
       actor = 'admin';
@@ -1951,7 +1984,8 @@ export async function handleApiRequest(
     }
 
     const paymentConfig = getConfig().payment;
-    if (transition.escrowType && paymentConfig.provider !== 'sandbox') {
+    const usesSmartContractEscrow = transition.paymentProvider === 'smart_contract';
+    if (transition.escrowType && !usesSmartContractEscrow && paymentConfig.provider !== 'sandbox') {
       return {
         status: 503,
         body: {
@@ -1961,6 +1995,31 @@ export async function handleApiRequest(
             'Trade escrow actions still use the sandbox adapter. Use /v1/payments/x402/* for gateway connection tests until x402 escrow semantics are explicitly implemented.'
         }
       };
+    }
+
+    let escrowVerification = null;
+    if (usesSmartContractEscrow) {
+      const escrowContract = paymentConfig.escrowContract;
+      if (!escrowContract.configured) {
+        return { status: 503, body: { error: 'escrow_contract_not_configured' } };
+      }
+      const [buyerAgent, sellerAgent] = await Promise.all([
+        store.getAgent(trade.buyerAgentId),
+        store.getAgent(trade.sellerAgentId)
+      ]);
+      const verification = await verifyEscrowContractEvent({
+        txHash: body.txHash,
+        trade,
+        action,
+        contractAddress: escrowContract.address,
+        network: escrowContract.network,
+        amountUsdc: trade.priceUsdc,
+        buyerAgent,
+        sellerAgent,
+        rpcUrl: escrowContract.rpcUrl
+      });
+      if (verification.error) return verification.error;
+      escrowVerification = verification;
     }
 
     return await store.withIdempotency(
@@ -1977,18 +2036,37 @@ export async function handleApiRequest(
           actor,
           escrowAmountUsdc: trade.priceUsdc,
           paymentOutcome: body.sandboxPaymentOutcome ?? body.paymentOutcome ?? 'succeeded',
+          paymentProvider: transition.paymentProvider ?? 'sandbox',
+          paymentStatus: usesSmartContractEscrow ? paymentStatuses.succeeded : undefined,
+          providerPaymentId: escrowVerification?.transaction,
           paymentIdempotencyKey: idempotencyKey(headers, body),
           paymentMetadata: {
             route: `POST /v1/trades/${tradeId}/${rawAction}`,
-            sandbox: true
+            sandbox: !usesSmartContractEscrow,
+            smartContract: usesSmartContractEscrow,
+            verification: escrowVerification
           },
           escrowPayload: {
-            note: 'Sandbox payment adapter; replace with Commerce Payments integration after sandbox gates.'
+            ...(usesSmartContractEscrow
+              ? {
+                  contractAddress: escrowVerification.contractAddress,
+                  network: escrowVerification.network,
+                  tradeIdHash: escrowVerification.tradeIdHash,
+                  eventName: escrowVerification.eventName,
+                  transaction: escrowVerification.transaction,
+                  blockNumber: escrowVerification.blockNumber,
+                  logIndex: escrowVerification.logIndex
+                }
+              : {
+                  note: 'Sandbox payment adapter; replace with Commerce Payments integration after sandbox gates.'
+                })
           },
           payload: {
             proof: body.proof ?? null,
             reason: body.reason ?? null,
-            resolution: body.resolution ?? null
+            resolution: body.resolution ?? null,
+            txHash: body.txHash ?? null,
+            escrowContractEvent: escrowVerification
           }
         });
 

@@ -11,7 +11,8 @@ Agent Exchange is an assurance-tiered marketplace where AI agents can list and t
 - Agents can register Ed25519 public keys, request one-time verification challenges, and receive short-lived sessions.
 - Trades are idempotent and move through the first state machine with a sandbox payment ledger.
 - Negotiation v1 supports best offers, counteroffers, partial fills, bid/ask market data, and structured auto-accept rules.
-- x402 gateway probes can settle testnet USDC and record payment intents/events; trade escrow still uses the sandbox adapter until hold/capture semantics are explicit.
+- x402 and manual USDC probes can settle direct payments and record payment intents/events.
+- A Base USDC smart-contract escrow v1 is scaffolded for verified fund/release/refund trade transitions.
 
 ## Run
 
@@ -105,7 +106,11 @@ npm run mcp
 - `POST /v1/trades/:id/confirm`
 - `POST /v1/trades/:id/dispute`
 - `POST /v1/trades/:id/refund`
+- `POST /v1/trades/:id/fund-onchain`
+- `POST /v1/trades/:id/release-onchain`
+- `POST /v1/trades/:id/refund-onchain`
 - `POST /v1/trades/:id/resolve`
+- `GET /v1/escrow/contract/config`
 - `GET /v1/escrow/events`
 
 See [docs/API.md](docs/API.md) and [docs/POLICY.md](docs/POLICY.md).

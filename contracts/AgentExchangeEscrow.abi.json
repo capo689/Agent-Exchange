@@ -1,0 +1,87 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      { "name": "asset_", "type": "address" },
+      { "name": "platformFeeRecipient_", "type": "address" },
+      { "name": "arbitrator_", "type": "address" },
+      { "name": "platformFeeBps_", "type": "uint16" }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "fund",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "tradeIdHash", "type": "bytes32" },
+      { "name": "tradeId", "type": "string" },
+      { "name": "seller", "type": "address" },
+      { "name": "amount", "type": "uint256" }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "release",
+    "stateMutability": "nonpayable",
+    "inputs": [{ "name": "tradeIdHash", "type": "bytes32" }],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "refund",
+    "stateMutability": "nonpayable",
+    "inputs": [{ "name": "tradeIdHash", "type": "bytes32" }],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "escrowOf",
+    "stateMutability": "view",
+    "inputs": [{ "name": "tradeIdHash", "type": "bytes32" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          { "name": "buyer", "type": "address" },
+          { "name": "seller", "type": "address" },
+          { "name": "amount", "type": "uint256" },
+          { "name": "feeBps", "type": "uint16" },
+          { "name": "state", "type": "uint8" }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "EscrowFunded",
+    "inputs": [
+      { "name": "tradeIdHash", "type": "bytes32", "indexed": true },
+      { "name": "tradeId", "type": "string", "indexed": false },
+      { "name": "buyer", "type": "address", "indexed": true },
+      { "name": "seller", "type": "address", "indexed": true },
+      { "name": "amount", "type": "uint256", "indexed": false },
+      { "name": "feeBps", "type": "uint16", "indexed": false }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "EscrowReleased",
+    "inputs": [
+      { "name": "tradeIdHash", "type": "bytes32", "indexed": true },
+      { "name": "seller", "type": "address", "indexed": true },
+      { "name": "sellerAmount", "type": "uint256", "indexed": false },
+      { "name": "platformFee", "type": "uint256", "indexed": false }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "EscrowRefunded",
+    "inputs": [
+      { "name": "tradeIdHash", "type": "bytes32", "indexed": true },
+      { "name": "buyer", "type": "address", "indexed": true },
+      { "name": "amount", "type": "uint256", "indexed": false }
+    ]
+  }
+]

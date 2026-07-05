@@ -7,7 +7,9 @@ import {
   decodePaymentResponseHeader,
   encodePaymentSignatureHeader
 } from '@x402/core/http';
+import { encodeAbiParameters, encodeEventTopics } from 'viem';
 import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
+import { escrowContractAbi, escrowTradeIdHash } from '../src/escrow-contract.js';
 import { createRateLimiter } from '../src/rate-limit.js';
 import { createApp, handleApiRequest } from '../src/server.js';
 import { createStore } from '../src/store.js';
@@ -78,13 +80,14 @@ function createClient() {
   };
 }
 
-async function registerBasicAgent(client, name) {
+async function registerBasicAgent(client, name, overrides = {}) {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const response = await client.post('/v1/agents/register', {
     developerId: `dev_${name}`,
     name,
     reputationScore: name.includes('good') ? 90 : 0,
-    publicKeyJwk: publicKey.export({ format: 'jwk' })
+    publicKeyJwk: publicKey.export({ format: 'jwk' }),
+    ...overrides
   });
   assert.equal(response.status, 201);
 
@@ -136,6 +139,52 @@ async function createFungibleListing(client, seller, overrides = {}) {
   });
   assert.equal(response.status, 201);
   return response.body.listing;
+}
+
+function escrowFundedLog({ contractAddress, tradeId, buyer, seller, amount, feeBps = 25 }) {
+  return {
+    address: contractAddress,
+    topics: encodeEventTopics({
+      abi: escrowContractAbi,
+      eventName: 'EscrowFunded',
+      args: {
+        tradeIdHash: escrowTradeIdHash(tradeId),
+        buyer,
+        seller
+      }
+    }),
+    data: encodeAbiParameters(
+      [
+        { type: 'string' },
+        { type: 'uint256' },
+        { type: 'uint16' }
+      ],
+      [tradeId, BigInt(amount), feeBps]
+    ),
+    logIndex: '0x0'
+  };
+}
+
+function escrowReleasedLog({ contractAddress, tradeId, seller, sellerAmount, platformFee }) {
+  return {
+    address: contractAddress,
+    topics: encodeEventTopics({
+      abi: escrowContractAbi,
+      eventName: 'EscrowReleased',
+      args: {
+        tradeIdHash: escrowTradeIdHash(tradeId),
+        seller
+      }
+    }),
+    data: encodeAbiParameters(
+      [
+        { type: 'uint256' },
+        { type: 'uint256' }
+      ],
+      [BigInt(sellerAmount), BigInt(platformFee)]
+    ),
+    logIndex: '0x1'
+  };
 }
 
 test('policy exposes assurance tiers and severe abuse response', async () => {
@@ -198,6 +247,14 @@ test('config accepts Render Supabase env group names without exposing secrets in
         facilitatorRequiresAuth: false,
         facilitatorBearerConfigured: false,
         maxTimeoutSeconds: 60
+      },
+      escrowContract: {
+        configured: false,
+        addressConfigured: false,
+        network: 'eip155:84532',
+        asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+        platformFeeBps: 0,
+        rpcUrlConfigured: false
       }
     },
     maxJsonBodyBytes: 1048576,
@@ -234,6 +291,14 @@ test('x402 config exposes safe readiness without leaking facilitator bearer toke
       facilitatorRequiresAuth: true,
       facilitatorBearerConfigured: true,
       maxTimeoutSeconds: 60
+    },
+    escrowContract: {
+      configured: false,
+      addressConfigured: false,
+      network: 'eip155:84532',
+      asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+      platformFeeBps: 0,
+      rpcUrlConfigured: false
     }
   });
   assert.equal(JSON.stringify(status).includes('secret-facilitator-token'), false);
@@ -872,6 +937,134 @@ test('trade transitions create escrow events and reject invalid state jumps', as
   assert.equal(confirmed.body.trade.state, 'CAPTURED');
   assert.equal(confirmed.body.escrowEvent.type, 'CAPTURE_STUB');
   assert.equal(confirmed.body.paymentIntent.action, 'CAPTURE');
+});
+
+test('smart contract escrow events fund and release trades through verified receipts', async () => {
+  const previousEnv = {
+    contractAddress: process.env.ESCROW_CONTRACT_ADDRESS,
+    network: process.env.ESCROW_NETWORK,
+    asset: process.env.ESCROW_ASSET,
+    rpcUrl: process.env.ESCROW_RPC_URL,
+    provider: process.env.PAYMENT_PROVIDER
+  };
+  const previousFetch = globalThis.fetch;
+  const contractAddress = '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+  const buyerWallet = '0xa8B690F9AEe52bdF344C6C5133eF4DfBAAA12e5D';
+  const sellerWallet = '0x4707fedb208178ba609626cd654316c8a6f53510';
+  const fundTxHash = '0x10999d74fd3d2372829c556665c544ae18a742e8ff3cf5f3571ce6f36bac3175';
+  const releaseTxHash = '0x20999d74fd3d2372829c556665c544ae18a742e8ff3cf5f3571ce6f36bac3175';
+  const calls = [];
+
+  process.env.ESCROW_CONTRACT_ADDRESS = contractAddress;
+  process.env.ESCROW_NETWORK = 'eip155:8453';
+  process.env.ESCROW_ASSET = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+  process.env.ESCROW_RPC_URL = 'https://rpc.test/base';
+  process.env.PAYMENT_PROVIDER = 'x402';
+
+  try {
+    const client = createClient();
+    const seller = await registerBasicAgent(client, 'escrow_seller', { walletAddress: sellerWallet });
+    const buyer = await registerBasicAgent(client, 'escrow_buyer', { walletAddress: buyerWallet });
+    const created = await client.post('/v1/listings', {
+      sellerAgentId: seller.id,
+      title: 'Escrow contract listing',
+      description: 'Seller-provided file delivery settled by contract escrow.',
+      category: 'digital_good',
+      assuranceTier: 0,
+      priceUsdc: '7.00'
+    });
+    const offered = await client.post('/v1/trades', {
+      listingId: created.body.listing.id,
+      buyerAgentId: buyer.id,
+      assuranceAcknowledgement: true
+    });
+    const tradeId = offered.body.trade.id;
+
+    globalThis.fetch = async (url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push({ url, body });
+      const txHash = body.params[0];
+      const log = txHash === fundTxHash
+        ? escrowFundedLog({
+            contractAddress,
+            tradeId,
+            buyer: buyerWallet,
+            seller: sellerWallet,
+            amount: '7000000'
+          })
+        : escrowReleasedLog({
+            contractAddress,
+            tradeId,
+            seller: sellerWallet,
+            sellerAmount: '6998250',
+            platformFee: '1750'
+          });
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          transactionHash: txHash,
+          status: '0x1',
+          blockNumber: '0x456',
+          logs: [log]
+        }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    };
+
+    const config = await client.get('/v1/escrow/contract/config', { tradeId });
+    assert.equal(config.status, 200);
+    assert.equal(config.body.configured, true);
+    assert.equal(config.body.sampleTradeIdHash, escrowTradeIdHash(tradeId));
+    assert.ok(config.body.abi.some((item) => item.name === 'EscrowFunded'));
+
+    const funded = await client.post(
+      `/v1/trades/${tradeId}/fund-onchain`,
+      { actorAgentId: buyer.id, txHash: fundTxHash },
+      { 'idempotency-key': 'onchain-fund-1' }
+    );
+    assert.equal(funded.status, 200);
+    assert.equal(funded.body.trade.state, 'FUNDED');
+    assert.equal(funded.body.escrowEvent.type, 'SMART_CONTRACT_FUND');
+    assert.equal(funded.body.escrowEvent.adapter, 'smart_contract');
+    assert.equal(funded.body.paymentIntent.provider, 'smart_contract');
+    assert.equal(funded.body.paymentIntent.providerPaymentId, fundTxHash);
+    assert.equal(funded.body.paymentIntent.action, 'AUTHORIZE');
+    assert.equal(funded.body.trade.events.at(-1).type, 'ONCHAIN_FUNDED');
+
+    const delivered = await client.post(`/v1/trades/${tradeId}/deliver`, {
+      actorAgentId: seller.id,
+      proof: { note: 'delivered' }
+    });
+    assert.equal(delivered.status, 200);
+
+    const released = await client.post(
+      `/v1/trades/${tradeId}/release-onchain`,
+      { actorAgentId: buyer.id, txHash: releaseTxHash },
+      { 'idempotency-key': 'onchain-release-1' }
+    );
+    assert.equal(released.status, 200);
+    assert.equal(released.body.trade.state, 'CAPTURED');
+    assert.equal(released.body.escrowEvent.type, 'SMART_CONTRACT_RELEASE');
+    assert.equal(released.body.paymentIntent.action, 'CAPTURE');
+    assert.equal(released.body.paymentIntent.providerPaymentId, releaseTxHash);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].url, 'https://rpc.test/base');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousEnv.contractAddress === undefined) delete process.env.ESCROW_CONTRACT_ADDRESS;
+    else process.env.ESCROW_CONTRACT_ADDRESS = previousEnv.contractAddress;
+    if (previousEnv.network === undefined) delete process.env.ESCROW_NETWORK;
+    else process.env.ESCROW_NETWORK = previousEnv.network;
+    if (previousEnv.asset === undefined) delete process.env.ESCROW_ASSET;
+    else process.env.ESCROW_ASSET = previousEnv.asset;
+    if (previousEnv.rpcUrl === undefined) delete process.env.ESCROW_RPC_URL;
+    else process.env.ESCROW_RPC_URL = previousEnv.rpcUrl;
+    if (previousEnv.provider === undefined) delete process.env.PAYMENT_PROVIDER;
+    else process.env.PAYMENT_PROVIDER = previousEnv.provider;
+  }
 });
 
 test('stale trade transition recheck prevents split escrow writes', async () => {

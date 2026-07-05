@@ -77,6 +77,7 @@ export function getConfig(env = process.env) {
   const x402FacilitatorRequiresAuth =
     env.X402_FACILITATOR_REQUIRES_AUTH === 'true' ||
     x402FacilitatorUrl.includes('api.cdp.coinbase.com');
+  const escrowNetwork = env.ESCROW_NETWORK ?? x402Network;
 
   return {
     port: parsePositiveInteger(env.PORT, DEFAULT_PORT),
@@ -103,6 +104,16 @@ export function getConfig(env = process.env) {
         facilitatorRequiresAuth: x402FacilitatorRequiresAuth,
         facilitatorBearerToken: x402FacilitatorBearerToken,
         maxTimeoutSeconds: parsePositiveInteger(env.X402_MAX_TIMEOUT_SECONDS, 60)
+      },
+      escrowContract: {
+        configured: Boolean(env.ESCROW_CONTRACT_ADDRESS),
+        address: env.ESCROW_CONTRACT_ADDRESS ?? '',
+        network: escrowNetwork,
+        asset: env.ESCROW_ASSET ?? x402AssetForNetwork(escrowNetwork),
+        platformFeeBps: Number.isInteger(Number(env.ESCROW_PLATFORM_FEE_BPS))
+          ? Number(env.ESCROW_PLATFORM_FEE_BPS)
+          : 0,
+        rpcUrl: env.ESCROW_RPC_URL ?? env.BASE_RPC_URL ?? ''
       }
     },
     database: databaseConnectionInfo(databaseUrl),
@@ -154,6 +165,14 @@ export function getSafeRuntimeStatus(env = process.env) {
         facilitatorRequiresAuth: config.payment.x402.facilitatorRequiresAuth,
         facilitatorBearerConfigured: Boolean(config.payment.x402.facilitatorBearerToken),
         maxTimeoutSeconds: config.payment.x402.maxTimeoutSeconds
+      },
+      escrowContract: {
+        configured: config.payment.escrowContract.configured,
+        addressConfigured: Boolean(config.payment.escrowContract.address),
+        network: config.payment.escrowContract.network,
+        asset: config.payment.escrowContract.asset,
+        platformFeeBps: config.payment.escrowContract.platformFeeBps,
+        rpcUrlConfigured: Boolean(config.payment.escrowContract.rpcUrl)
       }
     },
     maxJsonBodyBytes: config.maxJsonBodyBytes,
