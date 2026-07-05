@@ -214,4 +214,15 @@ npm run x402:probe
 
 `EVM_PRIVATE_KEY` must be a throwaway local test wallet funded with Base Sepolia test USDC and ETH. Do not put buyer private keys in Render or docs.
 
+Mainnet probe:
+
+```bash
+export AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com
+export X402_BUYER_NETWORK=eip155:8453
+export EVM_PRIVATE_KEY=0x_dedicated_base_mainnet_buyer_private_key
+npm run x402:probe
+```
+
+Before running mainnet, set Render `X402_NETWORK=eip155:8453` and `X402_ASSET=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`. Use a dedicated hot wallet with only the small amount intended for testing, plus enough Base ETH for gas. Do not use a primary wallet private key.
+
 After a successful probe, check `/admin` or `GET /v1/admin/payments?provider=x402` with `x-admin-token` to verify the settlement is visible in the payment ledger.
