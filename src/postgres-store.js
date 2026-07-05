@@ -1718,34 +1718,13 @@ export function createPostgresStore({ connectionString }) {
       const client = await pool.connect();
       try {
         await client.query('begin');
-        const existingIntentResult = await client.query(
-          `select * from payment_intents
-           where provider = $1 and provider_payment_id = $2
-           for update`,
-          [input.provider, input.providerPaymentId]
-        );
-        const existingIntent = paymentIntentFromRow(existingIntentResult.rows[0]);
-        if (existingIntent) {
-          const existingEventResult = await client.query(
-            `select * from payment_events
-             where payment_intent_id = $1
-             order by created_at desc
-             limit 1`,
-            [existingIntent.id]
-          );
-          await client.query('commit');
-          return {
-            duplicate: true,
-            paymentIntent: existingIntent,
-            paymentEvent: paymentEventFromRow(existingEventResult.rows[0])
-          };
-        }
 
         const paymentIntentResult = await client.query(
           `insert into payment_intents (
             id, trade_id, escrow_event_id, action, amount_usdc, actor, provider,
             provider_payment_id, status, idempotency_key, metadata, completed_at
           ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
+          on conflict (provider_payment_id) do nothing
           returning *`,
           [
             input.paymentIntentId ?? `pay_${randomUUID()}`,
@@ -1762,6 +1741,29 @@ export function createPostgresStore({ connectionString }) {
             isTerminalPaymentStatus(input.status) ? nowIso() : null
           ]
         );
+
+        if (!paymentIntentResult.rows[0]) {
+          const existingIntentResult = await client.query(
+            `select * from payment_intents
+             where provider_payment_id = $1`,
+            [input.providerPaymentId]
+          );
+          const existingIntent = paymentIntentFromRow(existingIntentResult.rows[0]);
+          const existingEventResult = await client.query(
+            `select * from payment_events
+             where payment_intent_id = $1
+             order by created_at desc
+             limit 1`,
+            [existingIntent.id]
+          );
+          await client.query('commit');
+          return {
+            duplicate: true,
+            paymentIntent: existingIntent,
+            paymentEvent: paymentEventFromRow(existingEventResult.rows[0])
+          };
+        }
+
         const paymentIntent = paymentIntentFromRow(paymentIntentResult.rows[0]);
         const paymentEventResult = await client.query(
           `insert into payment_events (id, payment_intent_id, provider, type, status, payload)
