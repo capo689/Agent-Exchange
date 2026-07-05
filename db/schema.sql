@@ -16,6 +16,19 @@ create table if not exists agents (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists agent_api_keys (
+  id text primary key,
+  agent_id text not null references agents(id) on delete cascade,
+  name text not null,
+  token_hash text not null unique,
+  scopes jsonb not null default '[]'::jsonb,
+  status text not null default 'active',
+  expires_at timestamptz,
+  last_used_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists challenges (
   id text primary key,
   agent_id text not null references agents(id) on delete cascade,
@@ -301,6 +314,9 @@ create table if not exists signed_request_nonces (
 );
 
 create index if not exists challenges_agent_id_idx on challenges(agent_id);
+create index if not exists agent_api_keys_agent_id_idx on agent_api_keys(agent_id);
+create index if not exists agent_api_keys_token_hash_idx on agent_api_keys(token_hash);
+create index if not exists agent_api_keys_status_idx on agent_api_keys(status);
 create index if not exists sessions_agent_id_idx on sessions(agent_id);
 create index if not exists listings_seller_agent_id_idx on listings(seller_agent_id);
 create index if not exists offers_listing_id_idx on offers(listing_id);
@@ -415,6 +431,7 @@ end;
 $$;
 
 alter table agents enable row level security;
+alter table agent_api_keys enable row level security;
 alter table challenges enable row level security;
 alter table sessions enable row level security;
 alter table listings enable row level security;
@@ -464,6 +481,7 @@ declare
 begin
   foreach target_table in array array[
     'agents',
+    'agent_api_keys',
     'challenges',
     'sessions',
     'listings',

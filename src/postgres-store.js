@@ -149,6 +149,21 @@ function agentFromRow(row) {
   };
 }
 
+function apiKeyFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    name: row.name,
+    scopes: row.scopes ?? [],
+    status: row.status,
+    expiresAt: iso(row.expires_at),
+    lastUsedAt: iso(row.last_used_at),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
+  };
+}
+
 function challengeFromRow(row) {
   if (!row) return null;
   return {
@@ -822,6 +837,94 @@ export function createPostgresStore({ connectionString }) {
         }
         throw error;
       }
+    },
+
+    async createApiKey({ agentId, name, scopes = ['read'], expiresAt = null }) {
+      if (!name || typeof name !== 'string') {
+        return { error: { status: 400, body: { error: 'api_key_name_required' } } };
+      }
+      if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== 'string')) {
+        return { error: { status: 400, body: { error: 'invalid_api_key_scopes' } } };
+      }
+      if (expiresAt && Number.isNaN(Date.parse(expiresAt))) {
+        return { error: { status: 400, body: { error: 'invalid_api_key_expiry' } } };
+      }
+
+      const agent = await methods.getAgent(agentId);
+      if (!agent) {
+        return { error: { status: 404, body: { error: 'agent_not_found' } } };
+      }
+      const token = `axk_${randomBytes(32).toString('base64url')}`;
+      const sanitizedScopes = [...new Set(scopes.map((scope) => scope.trim()).filter(Boolean))];
+      const { rows } = await query(
+        `insert into agent_api_keys (id, agent_id, name, token_hash, scopes, expires_at)
+         values ($1, $2, $3, $4, $5::jsonb, $6)
+         returning *`,
+        [
+          `key_${randomUUID()}`,
+          agentId,
+          name,
+          tokenDigest(token),
+          jsonb(sanitizedScopes),
+          expiresAt
+        ]
+      );
+      const apiKey = apiKeyFromRow(rows[0]);
+      await insertAuditEvent({
+        type: 'api_key.created',
+        severity: 'info',
+        actorAgentId: agentId,
+        resourceType: 'api_key',
+        resourceId: apiKey.id,
+        payload: {
+          name: apiKey.name,
+          scopes: apiKey.scopes,
+          expiresAt: apiKey.expiresAt
+        }
+      });
+      return { apiKey, token };
+    },
+
+    async listApiKeys(agentId) {
+      const { rows } = await query(
+        'select * from agent_api_keys where agent_id = $1 order by created_at desc',
+        [agentId]
+      );
+      return rows.map(apiKeyFromRow);
+    },
+
+    async revokeApiKey({ agentId, keyId }) {
+      const { rows } = await query(
+        `update agent_api_keys
+         set status = 'revoked', updated_at = now()
+         where id = $1 and agent_id = $2
+         returning *`,
+        [keyId, agentId]
+      );
+      const apiKey = apiKeyFromRow(rows[0]);
+      if (!apiKey) return null;
+      await insertAuditEvent({
+        type: 'api_key.revoked',
+        severity: 'warn',
+        actorAgentId: agentId,
+        resourceType: 'api_key',
+        resourceId: apiKey.id,
+        payload: { name: apiKey.name }
+      });
+      return apiKey;
+    },
+
+    async getApiKeyByToken(token, now = new Date()) {
+      const { rows } = await query(
+        `update agent_api_keys
+         set last_used_at = now(), updated_at = updated_at
+         where token_hash = $1
+           and status = 'active'
+           and (expires_at is null or expires_at > $2)
+         returning *`,
+        [tokenDigest(token), now]
+      );
+      return apiKeyFromRow(rows[0]);
     },
 
     async createChallenge(agentId) {

@@ -26,9 +26,15 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function redactApiKey(apiKey) {
+  const { tokenHash, ...safe } = clone(apiKey);
+  return safe;
+}
+
 function createInitialState() {
   return {
     agents: [],
+    apiKeys: [],
     challenges: [],
     sessions: [],
     listings: [],
@@ -110,6 +116,7 @@ export function createStore({ filePath } = {}) {
     : createInitialState();
 
   const agents = mapById(state.agents);
+  const apiKeys = mapById(state.apiKeys ?? []);
   const challenges = mapById(state.challenges);
   const sessions = mapById(state.sessions);
   const listings = mapById(state.listings);
@@ -143,6 +150,7 @@ export function createStore({ filePath } = {}) {
       JSON.stringify(
         {
           agents: [...agents.values()],
+          apiKeys: [...apiKeys.values()],
           challenges: [...challenges.values()],
           sessions: [...sessions.values()],
           listings: [...listings.values()],
@@ -698,6 +706,92 @@ export function createStore({ filePath } = {}) {
       signedRequestNonces.set(key, record);
       persist();
       return { record };
+    },
+
+    createApiKey({ agentId, name, scopes = ['read'], expiresAt = null }) {
+      if (!agents.has(agentId)) {
+        return { error: { status: 404, body: { error: 'agent_not_found' } } };
+      }
+      if (!name || typeof name !== 'string') {
+        return { error: { status: 400, body: { error: 'api_key_name_required' } } };
+      }
+      if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== 'string')) {
+        return { error: { status: 400, body: { error: 'invalid_api_key_scopes' } } };
+      }
+      if (expiresAt && Number.isNaN(Date.parse(expiresAt))) {
+        return { error: { status: 400, body: { error: 'invalid_api_key_expiry' } } };
+      }
+
+      const now = nowIso();
+      const token = `axk_${randomBytes(32).toString('base64url')}`;
+      const apiKey = {
+        id: `key_${randomUUID()}`,
+        agentId,
+        name,
+        tokenHash: tokenDigest(token),
+        scopes: [...new Set(scopes.map((scope) => scope.trim()).filter(Boolean))],
+        status: 'active',
+        expiresAt: expiresAt ?? null,
+        lastUsedAt: null,
+        createdAt: now,
+        updatedAt: now
+      };
+      apiKeys.set(apiKey.id, apiKey);
+      recordAuditEvent({
+        type: 'api_key.created',
+        severity: 'info',
+        actorAgentId: agentId,
+        resourceType: 'api_key',
+        resourceId: apiKey.id,
+        payload: {
+          name: apiKey.name,
+          scopes: apiKey.scopes,
+          expiresAt: apiKey.expiresAt
+        }
+      });
+      persist();
+      return {
+        apiKey: redactApiKey(apiKey),
+        token
+      };
+    },
+
+    listApiKeys(agentId) {
+      return [...apiKeys.values()]
+        .filter((apiKey) => apiKey.agentId === agentId)
+        .map(redactApiKey);
+    },
+
+    revokeApiKey({ agentId, keyId }) {
+      const apiKey = apiKeys.get(keyId);
+      if (!apiKey || apiKey.agentId !== agentId) return null;
+      apiKey.status = 'revoked';
+      apiKey.updatedAt = nowIso();
+      recordAuditEvent({
+        type: 'api_key.revoked',
+        severity: 'warn',
+        actorAgentId: agentId,
+        resourceType: 'api_key',
+        resourceId: apiKey.id,
+        payload: { name: apiKey.name }
+      });
+      persist();
+      return redactApiKey(apiKey);
+    },
+
+    getApiKeyByToken(token, now = new Date()) {
+      if (!token || typeof token !== 'string') return null;
+      const hash = tokenDigest(token);
+      for (const apiKey of apiKeys.values()) {
+        if (apiKey.tokenHash !== hash) continue;
+        if (apiKey.status !== 'active') return null;
+        if (apiKey.expiresAt && Date.parse(apiKey.expiresAt) <= now.getTime()) return null;
+        apiKey.lastUsedAt = nowIso();
+        apiKey.updatedAt = apiKey.updatedAt ?? apiKey.createdAt;
+        persist();
+        return redactApiKey(apiKey);
+      }
+      return null;
     },
 
     createChallenge(agentId) {

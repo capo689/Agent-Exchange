@@ -808,6 +808,56 @@ test('signed agent requests authenticate mutations and reject nonce replay', asy
   assert.equal(mismatch.body.error, 'authenticated_actor_mismatch');
 });
 
+test('scoped API keys authenticate agents and enforce route scopes', async () => {
+  const client = createClient();
+  const { seller } = await registerBuyerSeller(client);
+  const readKey = await client.post(`/v1/agents/${seller.id}/api-keys`, {
+    name: 'read only',
+    scopes: ['read']
+  }, seller.authHeaders);
+  const writeKey = await client.post(`/v1/agents/${seller.id}/api-keys`, {
+    name: 'listing writer',
+    scopes: ['listings:write']
+  }, seller.authHeaders);
+  const listed = await client.getWithHeaders(`/v1/agents/${seller.id}/api-keys`, seller.authHeaders);
+
+  const body = {
+    sellerAgentId: seller.id,
+    title: 'API key listing',
+    description: 'Scoped key creates this listing.',
+    category: 'digital_good',
+    assuranceTier: 0,
+    priceUsdc: '1.00'
+  };
+  const denied = await client.postWithoutAuth('/v1/listings', body, {
+    authorization: `ApiKey ${readKey.body.token}`
+  });
+  const created = await client.postWithoutAuth('/v1/listings', body, {
+    authorization: `ApiKey ${writeKey.body.token}`
+  });
+  const revoked = await client.post(`/v1/agents/${seller.id}/api-keys/${writeKey.body.apiKey.id}/revoke`, {}, seller.authHeaders);
+  const afterRevoke = await client.postWithoutAuth('/v1/listings', {
+    ...body,
+    title: 'Revoked key listing'
+  }, {
+    authorization: `ApiKey ${writeKey.body.token}`
+  });
+
+  assert.equal(readKey.status, 201);
+  assert.ok(readKey.body.token.startsWith('axk_'));
+  assert.equal('tokenHash' in readKey.body.apiKey, false);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.apiKeys.length, 2);
+  assert.equal('tokenHash' in listed.body.apiKeys[0], false);
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.error, 'api_key_scope_denied');
+  assert.equal(created.status, 201);
+  assert.equal(revoked.status, 200);
+  assert.equal(revoked.body.apiKey.status, 'revoked');
+  assert.equal(afterRevoke.status, 401);
+  assert.equal(afterRevoke.body.error, 'invalid_or_expired_api_key');
+});
+
 test('agents can register and verify an Ed25519 challenge once', async () => {
   const client = createClient();
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');

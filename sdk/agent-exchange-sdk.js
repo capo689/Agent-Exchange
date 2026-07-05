@@ -77,9 +77,16 @@ function queryString(query = {}) {
 }
 
 export class AgentExchangeClient {
-  constructor({ baseUrl = 'http://localhost:8787', sessionToken = null, agentId = null, privateKey = null } = {}) {
+  constructor({
+    baseUrl = 'http://localhost:8787',
+    sessionToken = null,
+    apiKeyToken = null,
+    agentId = null,
+    privateKey = null
+  } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.sessionToken = sessionToken;
+    this.apiKeyToken = apiKeyToken;
     this.agentId = agentId;
     this.privateKey = privateKey;
   }
@@ -88,12 +95,21 @@ export class AgentExchangeClient {
     return new AgentExchangeClient({ baseUrl: this.baseUrl, sessionToken });
   }
 
+  withApiKey(apiKeyToken) {
+    return new AgentExchangeClient({ baseUrl: this.baseUrl, apiKeyToken });
+  }
+
   withSignedRequests(agentId, privateKey) {
     return new AgentExchangeClient({ baseUrl: this.baseUrl, agentId, privateKey });
   }
 
   setSessionToken(sessionToken) {
     this.sessionToken = sessionToken;
+    return this;
+  }
+
+  setApiKeyToken(apiKeyToken) {
+    this.apiKeyToken = apiKeyToken;
     return this;
   }
 
@@ -107,8 +123,10 @@ export class AgentExchangeClient {
     const url = new URL(`${this.baseUrl}${path}`);
     const authHeaders = this.sessionToken
       ? { authorization: `Bearer ${this.sessionToken}` }
+      : this.apiKeyToken
+        ? { authorization: `ApiKey ${this.apiKeyToken}` }
       : {};
-    const signedHeaders = !this.sessionToken && this.agentId && this.privateKey
+    const signedHeaders = !this.sessionToken && !this.apiKeyToken && this.agentId && this.privateKey
       ? signRequestHeaders({
           agentId: this.agentId,
           privateKey: this.privateKey,
@@ -158,6 +176,18 @@ export class AgentExchangeClient {
 
   getAgentOnboarding(agentId) {
     return this.request('GET', `/v1/agents/${agentId}/onboarding`);
+  }
+
+  createApiKey(agentId, input) {
+    return this.request('POST', `/v1/agents/${agentId}/api-keys`, input);
+  }
+
+  listApiKeys(agentId) {
+    return this.request('GET', `/v1/agents/${agentId}/api-keys`);
+  }
+
+  revokeApiKey(agentId, keyId) {
+    return this.request('POST', `/v1/agents/${agentId}/api-keys/${keyId}/revoke`, {});
   }
 
   requestChallenge(agentId) {

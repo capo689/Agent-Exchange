@@ -66,14 +66,19 @@ test('SDK client attaches bearer or signed auth headers', async () => {
       priceUsdc: '1.00'
     });
 
+    const apiKeyClient = signedClient.withApiKey('api-key-token');
+    await apiKeyClient.health();
+
     const bearerClient = signedClient.withSession('session-token');
     await bearerClient.health();
 
     assert.equal(calls[0].url, 'https://example.test/v1/listings');
     assert.equal(calls[0].init.headers['x-agent-id'], 'agt_signed');
     assert.ok(calls[0].init.headers['x-agent-signature']);
-    assert.equal(calls[1].init.headers.authorization, 'Bearer session-token');
+    assert.equal(calls[1].init.headers.authorization, 'ApiKey api-key-token');
     assert.equal(calls[1].init.headers['x-agent-id'], undefined);
+    assert.equal(calls[2].init.headers.authorization, 'Bearer session-token');
+    assert.equal(calls[2].init.headers['x-agent-id'], undefined);
   } finally {
     globalThis.fetch = previousFetch;
   }

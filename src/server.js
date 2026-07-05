@@ -156,6 +156,21 @@ function validateAgentInput(input) {
   return errors;
 }
 
+function validateApiKeyInput(input) {
+  const errors = [];
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  if (!input.name || typeof input.name !== 'string') errors.push('name is required');
+  if (input.scopes !== undefined) {
+    if (!Array.isArray(input.scopes) || input.scopes.some((scope) => typeof scope !== 'string')) {
+      errors.push('scopes must be an array of strings');
+    }
+  }
+  if (input.expiresAt !== undefined && input.expiresAt !== null && Number.isNaN(Date.parse(input.expiresAt))) {
+    errors.push('expiresAt must be an ISO timestamp when supplied');
+  }
+  return errors;
+}
+
 function validateOfferInput(input) {
   const errors = [];
 
@@ -498,6 +513,15 @@ function getBearerToken(headers) {
   return match ? match[1].trim() : null;
 }
 
+function getApiKeyToken(headers) {
+  const direct = getHeader(headers, 'x-agent-api-key');
+  if (direct && typeof direct === 'string') return direct.trim();
+  const header = getHeader(headers, 'authorization');
+  if (!header || typeof header !== 'string') return null;
+  const match = header.match(/^ApiKey\s+(.+)$/i);
+  return match ? match[1].trim() : null;
+}
+
 function normalizeQueryForSignature(query = {}) {
   if (typeof query?.entries === 'function') {
     return Object.fromEntries([...query.entries()].sort(([a], [b]) => a.localeCompare(b)));
@@ -511,6 +535,82 @@ function normalizeQueryForSignature(query = {}) {
 
 function signedRequestBodyDigest(body = {}) {
   return createHash('sha256').update(canonicalJson(body ?? {})).digest('hex');
+}
+
+function requestedApiScope({ method, pathname }) {
+  const mode = method === 'GET' ? 'read' : 'write';
+  if (pathname?.startsWith('/v1/listings')) return `listings:${mode}`;
+  if (pathname?.startsWith('/v1/trades')) return `trades:${mode}`;
+  if (pathname?.startsWith('/v1/offers')) return `offers:${mode}`;
+  if (pathname?.startsWith('/v1/agents')) return `agents:${mode}`;
+  if (pathname?.startsWith('/v1/inventory')) return `inventory:${mode}`;
+  return mode;
+}
+
+function apiKeyAllowsScope(apiKey, request = {}) {
+  const scopes = new Set(apiKey.scopes ?? []);
+  const requested = requestedApiScope(request);
+  const mode = request.method === 'GET' ? 'read' : 'write';
+  return (
+    scopes.has('*') ||
+    scopes.has(requested) ||
+    scopes.has(mode) ||
+    (mode === 'read' && scopes.has('write'))
+  );
+}
+
+async function authenticateApiKey(headers, store, request = {}) {
+  const token = getApiKeyToken(headers);
+  if (!token) return null;
+  if (typeof store.getApiKeyByToken !== 'function') {
+    return {
+      error: {
+        status: 503,
+        body: {
+          error: 'api_key_auth_unavailable',
+          message: 'Scoped API key authentication is unavailable on this store.'
+        }
+      }
+    };
+  }
+  const apiKey = await store.getApiKeyByToken(token);
+  if (!apiKey) {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'invalid_or_expired_api_key',
+          message: 'The API key is invalid, revoked, or expired.'
+        }
+      }
+    };
+  }
+  if (!apiKeyAllowsScope(apiKey, request)) {
+    return {
+      error: {
+        status: 403,
+        body: {
+          error: 'api_key_scope_denied',
+          requiredScope: requestedApiScope(request),
+          scopes: apiKey.scopes
+        }
+      }
+    };
+  }
+  const agent = await store.getAgent(apiKey.agentId);
+  if (!agent || agent.status !== 'active') {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'api_key_agent_inactive',
+          message: 'The API key is not tied to an active agent.'
+        }
+      }
+    };
+  }
+
+  return { auth: { session: null, apiKey, agent, agentId: agent.id, authMethod: 'api_key' } };
 }
 
 export function canonicalSignedRequest({ agentId, method, pathname, query = {}, body = {}, timestamp, nonce }) {
@@ -647,6 +747,8 @@ async function authenticateSignedAgent(headers, store, request = {}) {
 async function authenticateAgent(headers, store, request = {}) {
   const token = getBearerToken(headers);
   if (!token) {
+    const apiKeyResult = await authenticateApiKey(headers, store, request);
+    if (apiKeyResult) return apiKeyResult;
     const signedResult = await authenticateSignedAgent(headers, store, request);
     if (signedResult) return signedResult;
     return {
@@ -1820,6 +1922,52 @@ export async function handleApiRequest(
     if (accessError) return accessError;
     const listings = await store.listListings({ sellerAgentId: agent.id, limit: 10000, offset: 0 });
     return { status: 200, body: { onboarding: agentOnboardingStatus(agent, listings) } };
+  }
+
+  const agentApiKeysMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/api-keys$/);
+  if (method === 'GET' && agentApiKeysMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
+    if (accessResult.error) return accessResult.error;
+    const agent = await store.getAgent(agentApiKeysMatch[1]);
+    if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    const accessError = requireOwnAgentOrAdmin(agent.id, accessResult.access);
+    if (accessError) return accessError;
+    if (typeof store.listApiKeys !== 'function') return { status: 503, body: { error: 'api_keys_unavailable' } };
+    return { status: 200, body: { apiKeys: await store.listApiKeys(agent.id) } };
+  }
+
+  if (method === 'POST' && agentApiKeysMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
+    if (accessResult.error) return accessResult.error;
+    const agent = await store.getAgent(agentApiKeysMatch[1]);
+    if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    const accessError = requireOwnAgentOrAdmin(agent.id, accessResult.access);
+    if (accessError) return accessError;
+    if (typeof store.createApiKey !== 'function') return { status: 503, body: { error: 'api_keys_unavailable' } };
+    const errors = validateApiKeyInput(body);
+    if (errors.length > 0) return { status: 400, body: { error: 'invalid_api_key', errors } };
+    const result = await store.createApiKey({
+      agentId: agent.id,
+      name: body.name,
+      scopes: body.scopes ?? ['read'],
+      expiresAt: body.expiresAt ?? null
+    });
+    if (result.error) return result.error;
+    return { status: 201, body: result };
+  }
+
+  const agentApiKeyRevokeMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/api-keys\/([^/]+)\/revoke$/);
+  if (method === 'POST' && agentApiKeyRevokeMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
+    if (accessResult.error) return accessResult.error;
+    const agent = await store.getAgent(agentApiKeyRevokeMatch[1]);
+    if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    const accessError = requireOwnAgentOrAdmin(agent.id, accessResult.access);
+    if (accessError) return accessError;
+    if (typeof store.revokeApiKey !== 'function') return { status: 503, body: { error: 'api_keys_unavailable' } };
+    const apiKey = await store.revokeApiKey({ agentId: agent.id, keyId: agentApiKeyRevokeMatch[2] });
+    if (!apiKey) return { status: 404, body: { error: 'api_key_not_found' } };
+    return { status: 200, body: { apiKey } };
   }
 
   const agentMatch = pathname.match(/^\/v1\/agents\/([^/]+)$/);
