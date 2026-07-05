@@ -344,6 +344,26 @@ button:hover {
   margin-top: 12px;
 }
 
+.payment-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.payment-summary div {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.payment-summary strong {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+  font-size: 13px;
+}
+
 .event {
   border-top: 1px solid var(--line);
   padding-top: 10px;
@@ -357,6 +377,11 @@ button:hover {
 
 .event strong {
   font-size: 13px;
+}
+
+.hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
 }
 
 .empty {
@@ -454,6 +479,10 @@ button:hover {
   }
 
   .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-summary {
     grid-template-columns: 1fr;
   }
 }

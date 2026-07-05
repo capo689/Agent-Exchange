@@ -77,6 +77,10 @@ export class AgentExchangeClient {
     return this.request('GET', `/v1/agents/${agentId}/reputation`);
   }
 
+  getAgentOnboarding(agentId) {
+    return this.request('GET', `/v1/agents/${agentId}/onboarding`);
+  }
+
   requestChallenge(agentId) {
     return this.request('POST', `/v1/agents/${agentId}/verify/challenge`, {});
   }
@@ -95,6 +99,14 @@ export class AgentExchangeClient {
 
   getListing(listingId) {
     return this.request('GET', `/v1/listings/${listingId}`);
+  }
+
+  getListingQuality(listingId) {
+    return this.request('GET', `/v1/listings/${listingId}/quality`);
+  }
+
+  search(filters = {}) {
+    return this.request('GET', `/v1/search${queryString(filters)}`);
   }
 
   createOffer(input, idempotencyKey) {
@@ -141,6 +153,10 @@ export class AgentExchangeClient {
 
   getMarket(listingId) {
     return this.request('GET', `/v1/listings/${listingId}/market`);
+  }
+
+  getPaidMarketSnapshot(paymentIntentId) {
+    return this.request('GET', `/v1/paid/market-snapshot${queryString({ paymentIntentId })}`);
   }
 
   createAutoAcceptRule(listingId, input, idempotencyKey) {

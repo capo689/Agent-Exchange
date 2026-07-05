@@ -9,6 +9,7 @@
     "mcp": "node mcp/server.js",
     "smoke:deploy": "node scripts/smoke-deploy.js",
     "smoke:deploy:bot": "node scripts/smoke-deploy.js --bot",
+    "private-alpha:check": "node scripts/private-alpha-check.js",
     "test:visual:dashboard": "node scripts/visual-dashboard-check.mjs",
     "x402:create-test-wallet": "node scripts/create-test-wallet.js",
     "x402:probe": "node scripts/x402-buyer-probe.js",

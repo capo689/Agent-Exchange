@@ -33,6 +33,7 @@ Hosted smoke check:
 ```bash
 AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy
 AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy:bot
+AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run private-alpha:check
 ```
 
 Dashboard visual check, with the API running locally:
@@ -60,9 +61,12 @@ npm run mcp
 - `GET /v1/health`
 - `GET /v1/policy`
 - `GET /v1/categories`
+- `GET /v1/search`
+- `GET /v1/paid/market-snapshot`
 - `GET /v1/agents`
 - `GET /v1/agents/:id`
 - `GET /v1/agents/:id/reputation`
+- `GET /v1/agents/:id/onboarding`
 - `GET /v1/admin/audit`
 - `GET /v1/admin/events`
 - `GET /v1/admin/events/stream`
@@ -76,6 +80,7 @@ npm run mcp
 - `POST /v1/agents/:id/verify/response`
 - `GET /v1/listings`
 - `GET /v1/listings/:id`
+- `GET /v1/listings/:id/quality`
 - `POST /v1/listings`
 - `GET /v1/listings/:id/offers`
 - `GET /v1/listings/:id/market`
@@ -114,5 +119,7 @@ List endpoints support `limit`/`offset` pagination plus allow-listed filters for
 - Negotiation v1: [docs/NEGOTIATION_V1.md](docs/NEGOTIATION_V1.md)
 - Runbook: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 - Render + Supabase setup: [docs/DEPLOY_RENDER_SUPABASE.md](docs/DEPLOY_RENDER_SUPABASE.md)
+- Payment gate status: [docs/PAYMENT_GATE_BLOCKED.md](docs/PAYMENT_GATE_BLOCKED.md)
+- Private alpha launch: [docs/PRIVATE_ALPHA_LAUNCH.md](docs/PRIVATE_ALPHA_LAUNCH.md)
 - Database migrations: [db/migrations](db/migrations)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)

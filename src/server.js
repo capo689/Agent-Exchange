@@ -6,6 +6,7 @@ import { encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/
 import { getConfig, getSafeRuntimeStatus } from './config.js';
 import { verifyEd25519Signature } from './crypto.js';
 import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
+import { compareUsdc } from './money.js';
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
 import { verifyOnchainUsdcTransfer } from './onchain.js';
 import {
@@ -28,6 +29,8 @@ const defaultStore = runtimeConfig.databaseUrl
   : createStore(runtimeConfig.dataDir ? { filePath: `${runtimeConfig.dataDir}/agent-exchange.json` } : {});
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
+const paidMarketSnapshotPriceUsdc = '0.01';
+const paidAccessProviders = new Set(['x402', 'manual_usdc']);
 
 const adminAssets = Object.freeze({
   '/admin': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
@@ -254,10 +257,168 @@ function countBy(items, field) {
   }, {});
 }
 
+function listingQuality(listing, seller = null) {
+  const checks = [
+    {
+      key: 'title',
+      passed: String(listing.title ?? '').trim().length >= 8,
+      message: 'Title is specific enough to scan.'
+    },
+    {
+      key: 'description',
+      passed: String(listing.description ?? '').trim().length >= 40,
+      message: 'Description explains what the buyer receives.'
+    },
+    {
+      key: 'category',
+      passed: Boolean(listing.category),
+      message: 'Category is present.'
+    },
+    {
+      key: 'price',
+      passed: Boolean(listing.priceUsdc),
+      message: 'Price is present.'
+    },
+    {
+      key: 'sellerAccountability',
+      passed: Boolean(seller?.publicKeyJwk) && seller?.status !== 'flagged',
+      message: 'Seller has a usable agent identity and is not flagged.'
+    },
+    {
+      key: 'policyScreened',
+      passed: Boolean(listing.screening),
+      message: 'Listing has a policy-screening result.'
+    }
+  ];
+  const passed = checks.filter((check) => check.passed).length;
+  return {
+    score: Math.round((passed / checks.length) * 100),
+    checks
+  };
+}
+
+function agentOnboardingStatus(agent, listings = []) {
+  const activeListings = listings.filter((listing) => listing.sellerAgentId === agent.id && listing.status !== 'blocked');
+  const checks = [
+    {
+      key: 'identity',
+      passed: Boolean(agent.publicKeyJwk),
+      message: 'Agent has an Ed25519 public key.'
+    },
+    {
+      key: 'sessionReady',
+      passed: agent.status === 'active',
+      message: 'Agent is active and can authenticate requests.'
+    },
+    {
+      key: 'reputation',
+      passed: Number(agent.reputationScore) >= 50,
+      message: 'Agent has enough reputation for private alpha demos.'
+    },
+    {
+      key: 'listingReady',
+      passed: activeListings.length > 0,
+      message: 'Agent has at least one non-blocked listing.'
+    },
+    {
+      key: 'wallet',
+      passed: Boolean(agent.walletAddress),
+      message: 'Agent has a wallet address on file.'
+    }
+  ];
+  const passed = checks.filter((check) => check.passed).length;
+  return {
+    agentId: agent.id,
+    ready: passed >= 4 && agent.status !== 'flagged',
+    score: Math.round((passed / checks.length) * 100),
+    activeListings: activeListings.length,
+    checks
+  };
+}
+
+function searchText(value) {
+  return String(value ?? '').toLowerCase();
+}
+
 function recent(items, limit = 12) {
   return [...items]
     .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
     .slice(0, limit);
+}
+
+async function authorizePaidAccess({ store, headers, query, priceUsdc, resource }) {
+  const paymentIntentId =
+    queryValue(query, 'paymentIntentId') ??
+    getHeader(headers, 'x-payment-intent-id');
+  if (!paymentIntentId) {
+    return {
+      error: {
+        status: 402,
+        body: {
+          error: 'payment_intent_required',
+          resource,
+          priceUsdc,
+          acceptedProviders: [...paidAccessProviders],
+          instructions: 'Pay with x402 or manual_usdc, then retry with paymentIntentId query param or x-payment-intent-id header.'
+        }
+      }
+    };
+  }
+
+  const paymentIntent = await store.getPaymentIntent(paymentIntentId);
+  if (!paymentIntent) {
+    return { error: { status: 404, body: { error: 'payment_intent_not_found' } } };
+  }
+  if (!paidAccessProviders.has(paymentIntent.provider)) {
+    return {
+      error: {
+        status: 402,
+        body: {
+          error: 'payment_provider_not_accepted',
+          provider: paymentIntent.provider,
+          acceptedProviders: [...paidAccessProviders]
+        }
+      }
+    };
+  }
+  if (paymentIntent.status !== paymentStatuses.succeeded) {
+    return {
+      error: {
+        status: 402,
+        body: {
+          error: 'payment_not_settled',
+          paymentStatus: paymentIntent.status
+        }
+      }
+    };
+  }
+  if (compareUsdc(paymentIntent.amountUsdc, priceUsdc) < 0) {
+    return {
+      error: {
+        status: 402,
+        body: {
+          error: 'payment_amount_too_low',
+          requiredAmountUsdc: priceUsdc,
+          paymentAmountUsdc: paymentIntent.amountUsdc
+        }
+      }
+    };
+  }
+
+  await store.recordAuditEvent?.({
+    type: 'paid_access.granted',
+    severity: 'info',
+    resourceType: 'payment_intent',
+    resourceId: paymentIntent.id,
+    payload: {
+      resource,
+      priceUsdc,
+      provider: paymentIntent.provider,
+      amountUsdc: paymentIntent.amountUsdc
+    }
+  });
+
+  return { paymentIntent };
 }
 
 function hashIp(value) {
@@ -666,6 +827,62 @@ export async function handleApiRequest(
     };
   }
 
+  if (method === 'GET' && pathname === '/v1/search') {
+    const term = searchText(queryValue(query, 'q'));
+    const category = queryValue(query, 'category');
+    const assuranceTier = queryValue(query, 'assuranceTier');
+    const limitResult = parseIntegerQuery(queryValue(query, 'limit') ?? undefined, {
+      name: 'limit',
+      defaultValue: 20,
+      min: 1,
+      max: 50
+    });
+    if (limitResult.error) return { status: 400, body: { error: 'invalid_query', errors: [limitResult.error] } };
+
+    const [listings, agents] = await Promise.all([
+      store.listListings({ limit: 10000, offset: 0 }),
+      store.listAgents()
+    ]);
+    const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+    const results = listings
+      .filter((listing) => ['active', 'open'].includes(listing.status))
+      .filter((listing) => !category || listing.category === category)
+      .filter((listing) => !assuranceTier || String(listing.assuranceTier) === String(assuranceTier))
+      .map((listing) => {
+        const seller = agentsById.get(listing.sellerAgentId);
+        const haystack = searchText(`${listing.title} ${listing.description} ${listing.category} ${seller?.name ?? ''}`);
+        const quality = listingQuality(listing, seller);
+        const textMatch = !term || haystack.includes(term);
+        return {
+          type: 'listing',
+          score: (textMatch ? 50 : 0) + quality.score,
+          listing,
+          seller: seller ? {
+            id: seller.id,
+            name: seller.name,
+            reputationScore: seller.reputationScore,
+            verificationTier: seller.verificationTier
+          } : null,
+          quality
+        };
+      })
+      .filter((result) => !term || result.score > result.quality.score)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limitResult.value);
+
+    return {
+      status: 200,
+      body: {
+        query: {
+          q: term,
+          category: category ?? null,
+          assuranceTier: assuranceTier ?? null
+        },
+        results
+      }
+    };
+  }
+
   if (method === 'GET' && pathname === '/v1/listings') {
     const listQuery = parseListQuery(query, {
       sellerAgentId: {},
@@ -677,6 +894,14 @@ export async function handleApiRequest(
     if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
     const listings = await store.listListings(listQuery.filters);
     return { status: 200, body: paginatedBody('listings', listings, listQuery.filters) };
+  }
+
+  const listingQualityMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/quality$/);
+  if (method === 'GET' && listingQualityMatch) {
+    const listing = await store.getListing(listingQualityMatch[1]);
+    if (!listing || listing.status === 'blocked') return { status: 404, body: { error: 'listing_not_found' } };
+    const seller = await store.getAgent(listing.sellerAgentId);
+    return { status: 200, body: { listingId: listing.id, quality: listingQuality(listing, seller) } };
   }
 
   const listingMatch = pathname.match(/^\/v1\/listings\/([^/]+)$/);
@@ -758,6 +983,66 @@ export async function handleApiRequest(
     return { status: 200, body: { agents: await store.listAgents() } };
   }
 
+  if (method === 'GET' && pathname === '/v1/paid/market-snapshot') {
+    const access = await authorizePaidAccess({
+      store,
+      headers,
+      query,
+      priceUsdc: paidMarketSnapshotPriceUsdc,
+      resource: 'market_snapshot'
+    });
+    if (access.error) return access.error;
+
+    const dashboardLimit = 10000;
+    const [listings, offers, trades] = await Promise.all([
+      store.listListings({ limit: dashboardLimit, offset: 0 }),
+      store.listOffers({ limit: dashboardLimit, offset: 0 }),
+      store.listTrades({ limit: dashboardLimit, offset: 0 })
+    ]);
+    const activeListings = listings.filter((listing) => ['active', 'open'].includes(listing.status));
+    const capturedTrades = trades.filter((trade) => trade.state === 'CAPTURED');
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        resource: 'market_snapshot',
+        priceUsdc: paidMarketSnapshotPriceUsdc,
+        unlockedBy: {
+          paymentIntentId: access.paymentIntent.id,
+          provider: access.paymentIntent.provider,
+          amountUsdc: access.paymentIntent.amountUsdc
+        },
+        generatedAt: new Date().toISOString(),
+        snapshot: {
+          totals: {
+            activeListings: activeListings.length,
+            offers: offers.length,
+            trades: trades.length,
+            capturedTrades: capturedTrades.length
+          },
+          listingsByCategory: countBy(activeListings, 'category'),
+          listingsByAssuranceTier: countBy(activeListings, 'assuranceTier'),
+          offersByStatus: countBy(offers, 'status'),
+          tradesByState: countBy(trades, 'state'),
+          recentListings: recent(activeListings, 5).map((listing) => ({
+            id: listing.id,
+            title: listing.title,
+            category: listing.category,
+            assuranceTier: listing.assuranceTier,
+            priceUsdc: listing.priceUsdc,
+            inventoryType: listing.inventoryType
+          })),
+          recentTrades: recent(trades, 5).map((trade) => ({
+            id: trade.id,
+            state: trade.state,
+            priceUsdc: trade.priceUsdc,
+            listingId: trade.listingId
+          }))
+        }
+      }
+    };
+  }
+
   if (method === 'GET' && pathname === '/v1/admin/audit') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
@@ -813,6 +1098,8 @@ export async function handleApiRequest(
           offersByStatus: countBy(offers, 'status'),
           tradesByState: countBy(trades, 'state'),
           paymentIntentsByStatus: countBy(paymentIntents, 'status'),
+          paymentIntentsByProvider: countBy(paymentIntents, 'provider'),
+          paymentEventsByProvider: countBy(paymentEvents, 'provider'),
           requestLogsByStatus: countBy(requestLogs, 'status'),
           auditEventsBySeverity: countBy(auditEvents, 'severity')
         },
@@ -855,7 +1142,18 @@ export async function handleApiRequest(
   if (method === 'GET' && pathname === '/v1/admin/moderation') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
-    return { status: 200, body: { moderationEvents: await store.listModerationEvents() } };
+    const moderationEvents = await store.listModerationEvents();
+    return {
+      status: 200,
+      body: {
+        moderationEvents,
+        queue: {
+          total: moderationEvents.length,
+          reportable: moderationEvents.filter((event) => event.reportable).length,
+          byType: countBy(moderationEvents, 'type')
+        }
+      }
+    };
   }
 
   if (method === 'GET' && pathname === '/v1/admin/payments') {
@@ -1143,7 +1441,7 @@ export async function handleApiRequest(
     };
   }
 
-  const adminInspectMatch = pathname.match(/^\/v1\/admin\/inspect\/(agents|listings|offers|trades)\/([^/]+)$/);
+  const adminInspectMatch = pathname.match(/^\/v1\/admin\/inspect\/(agents|listings|offers|trades|payments)\/([^/]+)$/);
   if (method === 'GET' && adminInspectMatch) {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
@@ -1152,18 +1450,22 @@ export async function handleApiRequest(
       agents: () => store.getAgent(id),
       listings: () => store.getListing(id),
       offers: () => store.getOffer(id),
-      trades: () => store.getTrade(id)
+      trades: () => store.getTrade(id),
+      payments: () => store.getPaymentIntent(id)
     };
     const resource = await readers[type]();
     if (!resource) return { status: 404, body: { error: 'resource_not_found' } };
-    const singular = type.slice(0, -1);
+    const singular = type === 'payments' ? 'payment_intent' : type.slice(0, -1);
     const events = await store.listAuditEvents({
       limit: 50,
       offset: 0,
-      resourceType: singular === 'agencie' ? 'agent' : singular,
+      resourceType: singular,
       resourceId: id
     });
-    return { status: 200, body: { type, id, resource, events } };
+    const paymentEvents = type === 'payments'
+      ? await store.listPaymentEvents({ paymentIntentId: id, limit: 100, offset: 0 })
+      : [];
+    return { status: 200, body: { type, id, resource, events, paymentEvents } };
   }
 
   const adminPauseListingMatch = pathname.match(/^\/v1\/admin\/listings\/([^/]+)\/pause$/);
@@ -1201,6 +1503,14 @@ export async function handleApiRequest(
         reputationEvents: await store.listReputationEvents(agent.id)
       }
     };
+  }
+
+  const agentOnboardingMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/onboarding$/);
+  if (method === 'GET' && agentOnboardingMatch) {
+    const agent = await store.getAgent(agentOnboardingMatch[1]);
+    if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    const listings = await store.listListings({ sellerAgentId: agent.id, limit: 10000, offset: 0 });
+    return { status: 200, body: { onboarding: agentOnboardingStatus(agent, listings) } };
   }
 
   const agentMatch = pathname.match(/^\/v1\/agents\/([^/]+)$/);

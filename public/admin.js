@@ -135,26 +135,50 @@ function renderEscrow(events) {
   `).join('') : '<div class="empty">No escrow events</div>';
 }
 
+function renderPaymentSummary(byProvider = {}, byStatus = {}) {
+  const providerRows = Object.entries(byProvider).sort((a, b) => b[1] - a[1]);
+  const statusRows = Object.entries(byStatus).sort((a, b) => b[1] - a[1]);
+  $('payment-summary').innerHTML = `
+    <div>
+      <span class="label">Rails</span>
+      <strong>${providerRows.length ? providerRows.map(([provider, count]) => `${esc(provider)} ${esc(count)}`).join(' / ') : '-'}</strong>
+    </div>
+    <div>
+      <span class="label">Status</span>
+      <strong>${statusRows.length ? statusRows.map(([status, count]) => `${esc(status)} ${esc(count)}`).join(' / ') : '-'}</strong>
+    </div>
+  `;
+}
+
 function renderPayments(intents, events) {
   const rows = [
     ...(intents ?? []).map((intent) => ({
       kind: 'intent',
       at: intent.createdAt,
+      id: intent.id,
+      provider: intent.provider,
+      status: intent.status,
       label: `${intent.action} ${intent.amountUsdc} USDC`,
-      meta: `${intent.status} ${shortId(intent.tradeId)}`
+      meta: `${intent.provider} ${shortId(intent.providerPaymentId)}`,
+      tx: intent.providerPaymentId
     })),
     ...(events ?? []).map((event) => ({
-      kind: 'webhook',
+      kind: 'event',
       at: event.createdAt,
+      id: event.paymentIntentId,
+      provider: event.provider,
+      status: event.status,
       label: event.type,
-      meta: `${event.status} ${shortId(event.paymentIntentId)}`
+      meta: `${event.provider} ${shortId(event.paymentIntentId)}`,
+      tx: event.payload?.transaction
     }))
   ].sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? ''))).slice(0, 12);
 
   $('payment-stream').innerHTML = rows.length ? rows.map((row) => `
-    <div class="event">
-      <strong>${esc(row.label)} <span class="chip">${esc(row.kind)}</span></strong>
-      <span class="subtle">${esc(row.meta)}</span>
+    <div class="event payment-event" data-resource="payments" data-resource-id="${esc(row.id)}">
+      <strong>${esc(row.label)} <span class="chip">${esc(row.provider)}</span> <span class="chip">${esc(row.status)}</span></strong>
+      <span class="subtle">${esc(row.kind)} ${esc(row.meta)}</span>
+      ${row.tx ? `<span class="subtle hash">${esc(row.tx)}</span>` : ''}
       <span class="subtle">${esc(time(row.at))}</span>
     </div>
   `).join('') : '<div class="empty">No payment activity</div>';
@@ -238,6 +262,20 @@ function renderDetail(data) {
         `).join('') : '<div class="empty">No related events</div>'}
       </div>
     </div>
+    ${type === 'payments' ? `
+      <div>
+        <span class="label">Payment events</span>
+        <div class="detail-events">
+          ${(data.paymentEvents ?? []).length ? data.paymentEvents.map((event) => `
+            <div class="event">
+              <strong>${esc(event.type)} <span class="chip">${esc(event.status)}</span></strong>
+              <span class="subtle">${esc(event.provider)} ${esc(time(event.createdAt))}</span>
+              ${event.payload?.transaction ? `<span class="subtle hash">${esc(event.payload.transaction)}</span>` : ''}
+            </div>
+          `).join('') : '<div class="empty">No payment events</div>'}
+        </div>
+      </div>
+    ` : ''}
   `;
   state.selection = { type, id: data.id };
 }
@@ -292,6 +330,7 @@ function render(data) {
   renderTrades(data.recent.trades ?? []);
   renderReputation(data.recent.reputationEvents ?? []);
   renderEscrow(data.recent.escrowEvents ?? []);
+  renderPaymentSummary(data.breakdowns.paymentIntentsByProvider, data.breakdowns.paymentIntentsByStatus);
   renderPayments(data.recent.paymentIntents ?? [], data.recent.paymentEvents ?? []);
   renderModeration(data.recent.moderationEvents ?? []);
   renderOps(data.recent.auditEvents ?? []);

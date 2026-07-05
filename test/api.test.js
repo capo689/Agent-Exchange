@@ -519,6 +519,11 @@ test('manual USDC verification records an on-chain transfer in the payment ledge
     assert.equal(payments.body.paymentIntents.length, 1);
     assert.equal(payments.body.paymentEvents.length, 1);
     assert.equal(calls[0].url, 'https://mainnet.base.org');
+
+    const detail = await client.adminGet(`/v1/admin/inspect/payments/${verified.body.paymentIntent.id}`);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.resource.provider, 'manual_usdc');
+    assert.equal(detail.body.paymentEvents.length, 1);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousEnv.payTo === undefined) delete process.env.X402_PAY_TO;
@@ -530,6 +535,60 @@ test('manual USDC verification records an on-chain transfer in the payment ledge
     if (previousEnv.baseRpcUrl === undefined) delete process.env.BASE_RPC_URL;
     else process.env.BASE_RPC_URL = previousEnv.baseRpcUrl;
   }
+});
+
+test('paid market snapshot requires settled real-rail payment intent', async () => {
+  const client = createClient();
+  const { seller } = await registerBuyerSeller(client);
+  await client.post('/v1/listings', {
+    sellerAgentId: seller.id,
+    title: 'Paid snapshot listing',
+    description: 'Visible in paid market intelligence.',
+    category: 'data',
+    assuranceTier: 1,
+    priceUsdc: '2.00'
+  });
+
+  const missing = await client.get('/v1/paid/market-snapshot');
+  assert.equal(missing.status, 402);
+  assert.equal(missing.body.error, 'payment_intent_required');
+
+  const sandboxLedger = await client.store.recordExternalPaymentSettlement({
+    provider: 'sandbox',
+    providerPaymentId: 'sandbox_paid_demo',
+    action: 'CAPTURE',
+    amountUsdc: '1.00',
+    actor: 'test',
+    status: 'SUCCEEDED',
+    eventType: 'sandbox.payment_settled'
+  });
+  const rejectedSandbox = await client.get('/v1/paid/market-snapshot', {
+    paymentIntentId: sandboxLedger.paymentIntent.id
+  });
+  assert.equal(rejectedSandbox.status, 402);
+  assert.equal(rejectedSandbox.body.error, 'payment_provider_not_accepted');
+
+  const manualLedger = await client.store.recordExternalPaymentSettlement({
+    provider: 'manual_usdc',
+    providerPaymentId: '0x40999d74fd3d2372829c556665c544ae18a742e8ff3cf5f3571ce6f36bac3175',
+    action: 'CAPTURE',
+    amountUsdc: '0.01',
+    actor: '0xa8b690f9aee52bdf344c6c5133ef4dfbaaa12e5d',
+    status: 'SUCCEEDED',
+    eventType: 'manual_usdc.transfer_confirmed'
+  });
+  const snapshot = await client.get('/v1/paid/market-snapshot', {
+    paymentIntentId: manualLedger.paymentIntent.id
+  });
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.body.ok, true);
+  assert.equal(snapshot.body.unlockedBy.provider, 'manual_usdc');
+  assert.equal(snapshot.body.snapshot.totals.activeListings, 1);
+  assert.equal(snapshot.body.snapshot.recentListings[0].title, 'Paid snapshot listing');
+
+  const events = await client.adminGet('/v1/admin/events', { type: 'paid_access.granted' });
+  assert.equal(events.status, 200);
+  assert.equal(events.body.events.length, 1);
 });
 
 test('Tier 0 listings are allowed when they do not violate policy', async () => {
@@ -1119,6 +1178,35 @@ test('single-resource lookup endpoints return 404 for missing ids', async () => 
   assert.equal(offer.body.error, 'offer_not_found');
   assert.equal(trade.status, 404);
   assert.equal(trade.body.error, 'trade_not_found');
+});
+
+test('search, listing quality, and agent onboarding expose launch readiness signals', async () => {
+  const client = createClient();
+  const seller = await registerBasicAgent(client, 'seller_good_launch');
+  const created = await client.post('/v1/listings', {
+    sellerAgentId: seller.id,
+    title: 'Launch-ready API credit bundle',
+    description: 'A detailed bundle of transferable API credits with clear quantity, transfer timing, and buyer expectations.',
+    category: 'digital_good',
+    assuranceTier: 2,
+    priceUsdc: '12.50'
+  });
+  assert.equal(created.status, 201);
+
+  const search = await client.get('/v1/search', { q: 'credit bundle' });
+  assert.equal(search.status, 200);
+  assert.equal(search.body.results.length, 1);
+  assert.equal(search.body.results[0].listing.id, created.body.listing.id);
+  assert.ok(search.body.results[0].quality.score >= 80);
+
+  const quality = await client.get(`/v1/listings/${created.body.listing.id}/quality`);
+  assert.equal(quality.status, 200);
+  assert.ok(quality.body.quality.checks.some((check) => check.key === 'policyScreened' && check.passed));
+
+  const onboarding = await client.get(`/v1/agents/${seller.id}/onboarding`);
+  assert.equal(onboarding.status, 200);
+  assert.equal(onboarding.body.onboarding.ready, true);
+  assert.equal(onboarding.body.onboarding.activeListings, 1);
 });
 
 test('list endpoints support allow-listed filters and pagination', async () => {
