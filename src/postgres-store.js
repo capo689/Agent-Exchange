@@ -1710,6 +1710,97 @@ export function createPostgresStore({ connectionString }) {
       return rows.map(paymentEventFromRow);
     },
 
+    async recordExternalPaymentSettlement(input) {
+      if (!Object.values(paymentStatuses).includes(input.status)) {
+        return { error: { status: 400, body: { error: 'invalid_payment_status' } } };
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const existingIntentResult = await client.query(
+          `select * from payment_intents
+           where provider = $1 and provider_payment_id = $2
+           for update`,
+          [input.provider, input.providerPaymentId]
+        );
+        const existingIntent = paymentIntentFromRow(existingIntentResult.rows[0]);
+        if (existingIntent) {
+          const existingEventResult = await client.query(
+            `select * from payment_events
+             where payment_intent_id = $1
+             order by created_at desc
+             limit 1`,
+            [existingIntent.id]
+          );
+          await client.query('commit');
+          return {
+            duplicate: true,
+            paymentIntent: existingIntent,
+            paymentEvent: paymentEventFromRow(existingEventResult.rows[0])
+          };
+        }
+
+        const paymentIntentResult = await client.query(
+          `insert into payment_intents (
+            id, trade_id, escrow_event_id, action, amount_usdc, actor, provider,
+            provider_payment_id, status, idempotency_key, metadata, completed_at
+          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
+          returning *`,
+          [
+            input.paymentIntentId ?? `pay_${randomUUID()}`,
+            input.tradeId ?? null,
+            input.escrowEventId ?? null,
+            input.action ?? 'CAPTURE',
+            input.amountUsdc,
+            input.actor ?? 'external',
+            input.provider,
+            input.providerPaymentId,
+            input.status,
+            input.idempotencyKey ?? null,
+            jsonb(input.metadata ?? {}),
+            isTerminalPaymentStatus(input.status) ? nowIso() : null
+          ]
+        );
+        const paymentIntent = paymentIntentFromRow(paymentIntentResult.rows[0]);
+        const paymentEventResult = await client.query(
+          `insert into payment_events (id, payment_intent_id, provider, type, status, payload)
+           values ($1, $2, $3, $4, $5, $6::jsonb)
+           returning *`,
+          [
+            input.eventId ?? `evt_${randomUUID()}`,
+            paymentIntent.id,
+            input.provider,
+            input.eventType ?? `${input.provider}.payment_settled`,
+            input.status,
+            jsonb(input.payload ?? {})
+          ]
+        );
+        const paymentEvent = paymentEventFromRow(paymentEventResult.rows[0]);
+        await insertAuditEvent({
+          type: 'payment.external_settled',
+          severity: input.status === paymentStatuses.succeeded ? 'info' : 'warn',
+          actorAgentId: eventActor(input.actor),
+          resourceType: 'payment_intent',
+          resourceId: paymentIntent.id,
+          payload: {
+            eventId: paymentEvent.id,
+            provider: paymentIntent.provider,
+            providerPaymentId: paymentIntent.providerPaymentId,
+            status: paymentIntent.status,
+            duplicate: false
+          }
+        }, client);
+        await client.query('commit');
+        return { duplicate: false, paymentIntent, paymentEvent };
+      } catch (error) {
+        await client.query('rollback');
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
     async recordPaymentWebhookEvent(input) {
       const client = await pool.connect();
       try {

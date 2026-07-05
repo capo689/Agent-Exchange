@@ -350,11 +350,11 @@ Admin-only. Requires `x-admin-token`. Body:
 }
 ```
 
-The route calls the configured facilitator `/verify` endpoint and then `/settle`. It returns the payer, transaction, network, and amount when settlement succeeds.
+The route calls the configured facilitator `/verify` endpoint and then `/settle`. When settlement succeeds, it records an `x402` payment intent/event keyed by transaction hash and returns the payer, transaction, network, amount, and ledger records.
 
 - `GET /v1/payments/x402/probe?amountUsdc=0.01`
 
-Hosted x402 paid probe. Without a payment header, it returns `402` with a `PAYMENT-REQUIRED` header. With a valid `X-PAYMENT` or `PAYMENT-SIGNATURE` header, it calls facilitator `/verify`, then `/settle`, and returns a `PAYMENT-RESPONSE` header plus a JSON settlement body.
+Hosted x402 paid probe. Without a payment header, it returns `402` with a `PAYMENT-REQUIRED` header. With a valid `X-PAYMENT` or `PAYMENT-SIGNATURE` header, it calls facilitator `/verify`, then `/settle`, records one `x402` payment intent/event, and returns a `PAYMENT-RESPONSE` header plus a JSON settlement body. Replayed transaction hashes return `duplicate: true`.
 
 ## Maintenance
 

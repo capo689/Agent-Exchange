@@ -186,7 +186,7 @@ create table if not exists escrow_events (
 
 create table if not exists payment_intents (
   id text primary key,
-  trade_id text not null references trades(id) on delete cascade,
+  trade_id text references trades(id) on delete cascade,
   escrow_event_id text references escrow_events(id) on delete set null,
   action text not null check (action in ('AUTHORIZE', 'CAPTURE', 'REFUND')),
   amount_usdc text not null,

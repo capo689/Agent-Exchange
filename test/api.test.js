@@ -408,7 +408,28 @@ test('x402 probe returns payment challenge headers and settles a supplied paymen
     const paymentResponse = decodePaymentResponseHeader(paid.headers['PAYMENT-RESPONSE']);
     assert.equal(paid.body.ok, true);
     assert.equal(paymentResponse.transaction, '0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9');
+    assert.equal(paid.body.paymentIntent.provider, 'x402');
+    assert.equal(paid.body.paymentIntent.providerPaymentId, '0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9');
+    assert.equal(paid.body.paymentIntent.tradeId, null);
+    assert.equal(paid.body.paymentIntent.status, 'SUCCEEDED');
+    assert.equal(paid.body.paymentEvent.type, 'x402.payment_settled');
+
+    const duplicate = await client.getWithHeaders(
+      '/v1/payments/x402/probe',
+      { 'X-PAYMENT': encodePaymentSignatureHeader(paymentPayload) },
+      { amountUsdc: '0.01' }
+    );
+    assert.equal(duplicate.status, 200);
+    assert.equal(duplicate.body.duplicate, true);
+    assert.equal(duplicate.body.paymentIntent.id, paid.body.paymentIntent.id);
+
+    const payments = await client.adminGet('/v1/admin/payments', { provider: 'x402' });
+    assert.equal(payments.status, 200);
+    assert.equal(payments.body.paymentIntents.length, 1);
+    assert.equal(payments.body.paymentEvents.length, 1);
     assert.deepEqual(calls.map((call) => call.url), [
+      'https://facilitator.test/x402/verify',
+      'https://facilitator.test/x402/settle',
       'https://facilitator.test/x402/verify',
       'https://facilitator.test/x402/settle'
     ]);

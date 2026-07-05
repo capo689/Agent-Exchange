@@ -239,6 +239,71 @@ export function createStore({ filePath } = {}) {
     return intent;
   }
 
+  function recordExternalPaymentSettlement(input) {
+    const existingIntent = [...paymentIntents.values()].find((intent) => (
+      intent.provider === input.provider &&
+      intent.providerPaymentId === input.providerPaymentId
+    ));
+    if (existingIntent) {
+      return {
+        duplicate: true,
+        paymentIntent: existingIntent,
+        paymentEvent: [...paymentEvents.values()]
+          .filter((event) => event.paymentIntentId === existingIntent.id)
+          .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))[0] ?? null
+      };
+    }
+
+    if (!Object.values(paymentStatuses).includes(input.status)) {
+      return { error: { status: 400, body: { error: 'invalid_payment_status' } } };
+    }
+
+    const now = nowIso();
+    const paymentIntent = {
+      id: input.paymentIntentId ?? `pay_${randomUUID()}`,
+      tradeId: input.tradeId ?? null,
+      escrowEventId: input.escrowEventId ?? null,
+      action: input.action ?? 'CAPTURE',
+      amountUsdc: input.amountUsdc,
+      actor: input.actor ?? 'external',
+      provider: input.provider,
+      providerPaymentId: input.providerPaymentId,
+      status: input.status,
+      idempotencyKey: input.idempotencyKey ?? null,
+      metadata: input.metadata ?? {},
+      createdAt: now,
+      updatedAt: now,
+      completedAt: isTerminalPaymentStatus(input.status) ? now : null
+    };
+    const paymentEvent = {
+      id: input.eventId ?? `evt_${randomUUID()}`,
+      paymentIntentId: paymentIntent.id,
+      provider: input.provider,
+      type: input.eventType ?? `${input.provider}.payment_settled`,
+      status: input.status,
+      payload: input.payload ?? {},
+      createdAt: now
+    };
+    paymentIntents.set(paymentIntent.id, paymentIntent);
+    paymentEvents.set(paymentEvent.id, paymentEvent);
+    recordAuditEvent({
+      type: 'payment.external_settled',
+      severity: input.status === paymentStatuses.succeeded ? 'info' : 'warn',
+      actorAgentId: null,
+      resourceType: 'payment_intent',
+      resourceId: paymentIntent.id,
+      payload: {
+        eventId: paymentEvent.id,
+        provider: paymentIntent.provider,
+        providerPaymentId: paymentIntent.providerPaymentId,
+        status: paymentIntent.status,
+        duplicate: false
+      }
+    });
+    persist();
+    return { duplicate: false, paymentIntent, paymentEvent };
+  }
+
   function normalizeListingInventory(input) {
     const inventoryType = input.inventoryType ?? 'unique';
     const totalQuantity = inventoryType === 'fungible' ? Number(input.totalQuantity) : 1;
@@ -1319,6 +1384,10 @@ export function createStore({ filePath } = {}) {
 
     listPaymentEvents(filters = {}) {
       return applyListQuery([...paymentEvents.values()], filters);
+    },
+
+    recordExternalPaymentSettlement(input) {
+      return recordExternalPaymentSettlement(input);
     },
 
     recordPaymentWebhookEvent(input) {

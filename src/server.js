@@ -9,6 +9,7 @@ import { createRequestId, error as logError, info as logInfo, warn as logWarn } 
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
 import {
   buildX402PaymentRequirements,
+  paymentStatuses,
   parseX402PaymentPayload,
   settleX402Payment,
   verifySandboxWebhookSignature
@@ -532,6 +533,52 @@ function x402PaymentRequiredForProbe(paymentRequirements) {
   };
 }
 
+async function recordX402Settlement({ store, result, requirements, amountUsdc, paymentPayload, route }) {
+  const providerPaymentId = result.transaction ?? result.settle?.transaction ?? null;
+  if (!providerPaymentId) {
+    return {
+      error: {
+        status: 502,
+        body: {
+          error: 'x402_missing_settlement_transaction',
+          settle: result.settle ?? null
+        }
+      }
+    };
+  }
+
+  const actor = result.payer ?? paymentPayload.payload?.authorization?.from ?? 'external';
+  const ledger = await store.recordExternalPaymentSettlement({
+    provider: 'x402',
+    providerPaymentId,
+    action: 'CAPTURE',
+    amountUsdc,
+    actor,
+    status: paymentStatuses.succeeded,
+    idempotencyKey: `x402:${providerPaymentId}`,
+    eventType: 'x402.payment_settled',
+    metadata: {
+      route,
+      payer: result.payer,
+      payTo: requirements.x402.payTo,
+      network: result.network,
+      amountAtomic: result.amount,
+      paymentRequirements: result.paymentRequirements
+    },
+    payload: {
+      payer: result.payer,
+      transaction: providerPaymentId,
+      network: result.network,
+      amount: result.amount,
+      verify: result.verify ?? null,
+      settle: result.settle ?? null
+    }
+  });
+
+  if (ledger.error) return { error: ledger.error };
+  return ledger;
+}
+
 export async function handleApiRequest(
   { method, pathname, body = {}, headers = {}, query = {} },
   store = defaultStore
@@ -867,6 +914,17 @@ export async function handleApiRequest(
       };
     }
 
+    const ledger = await recordX402Settlement({
+      store,
+      result,
+      requirements,
+      amountUsdc,
+      paymentPayload,
+      route: '/v1/payments/x402/probe'
+    });
+
+    if (ledger.error) return ledger.error;
+
     return {
       status: 200,
       headers: {
@@ -881,6 +939,9 @@ export async function handleApiRequest(
           network: result.network,
           amount: result.amount
         },
+        paymentIntent: ledger.paymentIntent,
+        paymentEvent: ledger.paymentEvent,
+        duplicate: ledger.duplicate,
         message: 'x402 probe payment settled'
       }
     };
@@ -916,6 +977,17 @@ export async function handleApiRequest(
       };
     }
 
+    const ledger = await recordX402Settlement({
+      store,
+      result,
+      requirements,
+      amountUsdc,
+      paymentPayload,
+      route: '/v1/payments/x402/settle'
+    });
+
+    if (ledger.error) return ledger.error;
+
     return {
       status: 202,
       body: {
@@ -926,7 +998,10 @@ export async function handleApiRequest(
           network: result.network,
           amount: result.amount
         },
-        paymentRequirements: result.paymentRequirements
+        paymentRequirements: result.paymentRequirements,
+        paymentIntent: ledger.paymentIntent,
+        paymentEvent: ledger.paymentEvent,
+        duplicate: ledger.duplicate
       }
     };
   }

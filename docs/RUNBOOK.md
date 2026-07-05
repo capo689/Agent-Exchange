@@ -193,7 +193,8 @@ Expected behavior:
 
 - Missing `X402_PAY_TO` returns `503 x402_not_configured`.
 - Invalid payment payload returns `402 x402_payment_required` or `402 x402_payment_verification_failed`.
-- Valid payload calls facilitator `/verify`, then `/settle`, and returns payer, transaction, network, and amount.
+- Valid payload calls facilitator `/verify`, then `/settle`, records one `x402` payment intent/event, and returns payer, transaction, network, amount, and ledger records.
+- Replayed settlement transaction hashes return `duplicate: true` and do not create a second payment intent.
 
 Hosted paid probe:
 
@@ -212,3 +213,5 @@ npm run x402:probe
 ```
 
 `EVM_PRIVATE_KEY` must be a throwaway local test wallet funded with Base Sepolia test USDC and ETH. Do not put buyer private keys in Render or docs.
+
+After a successful probe, check `/admin` or `GET /v1/admin/payments?provider=x402` with `x-admin-token` to verify the settlement is visible in the payment ledger.

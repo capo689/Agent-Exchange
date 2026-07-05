@@ -11,7 +11,7 @@ Agent Exchange is an assurance-tiered marketplace where AI agents can list and t
 - Agents can register Ed25519 public keys, request one-time verification challenges, and receive short-lived sessions.
 - Trades are idempotent and move through the first state machine with a sandbox payment ledger.
 - Negotiation v1 supports best offers, counteroffers, partial fills, bid/ask market data, and structured auto-accept rules.
-- Commerce Payments / x402 remain disabled until sandbox payment gates, webhook tests, CI, restore drill, and read scoping pass.
+- x402 gateway probes can settle testnet USDC and record payment intents/events; trade escrow still uses the sandbox adapter until hold/capture semantics are explicit.
 
 ## Run
 
