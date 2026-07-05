@@ -72,8 +72,16 @@ export class AgentExchangeClient {
     return this.request('POST', '/v1/listings', input);
   }
 
+  getListing(listingId) {
+    return this.request('GET', `/v1/listings/${listingId}`);
+  }
+
   createOffer(input, idempotencyKey) {
     return this.request('POST', '/v1/offers', input, idempotencyKey ? { 'idempotency-key': idempotencyKey } : {});
+  }
+
+  getOffer(offerId) {
+    return this.request('GET', `/v1/offers/${offerId}`);
   }
 
   counterOffer(offerId, input, idempotencyKey) {
@@ -117,6 +125,10 @@ export class AgentExchangeClient {
 
   createTrade(input, idempotencyKey) {
     return this.request('POST', '/v1/trades', input, idempotencyKey ? { 'idempotency-key': idempotencyKey } : {});
+  }
+
+  getTrade(tradeId) {
+    return this.request('GET', `/v1/trades/${tradeId}`);
   }
 
   tradeAction(tradeId, action, body, idempotencyKey) {

@@ -68,6 +68,10 @@ Submits a base64 Ed25519 signature over `challenge.canonical`.
 
 Returns all non-blocked listings.
 
+## `GET /v1/listings/:id`
+
+Returns a single listing by ID. Missing listings return `404` with `listing_not_found`.
+
 ## `POST /v1/listings`
 
 Creates a listing.
@@ -98,6 +102,10 @@ Creates a listing.
 If policy screening detects prohibited content, the API returns `422`.
 
 ## Negotiation v1
+
+### `GET /v1/offers/:id`
+
+Returns a single offer by ID. Missing offers return `404` with `offer_not_found`.
 
 ### `POST /v1/offers`
 
@@ -201,6 +209,10 @@ For Tier 0 listings, `assuranceAcknowledgement` is required. Without it, the API
 Trade creation supports `Idempotency-Key` as an HTTP header or `idempotencyKey` in the JSON body.
 
 Direct trade creation also reserves listing inventory. For launch, accepted offers are the preferred path; the direct trade path exists as a simple buy-now compatibility path.
+
+## `GET /v1/trades/:id`
+
+Returns a single trade by ID. Missing trades return `404` with `trade_not_found`.
 
 ## Trade Actions
 

@@ -502,6 +502,7 @@ test('buyer can make best offer and seller can counter', async () => {
   const client = createClient();
   const { seller, buyer } = await registerBuyerSeller(client);
   const listing = await createFungibleListing(client, seller);
+  const fetchedListing = await client.get(`/v1/listings/${listing.id}`);
 
   const offer = await client.post('/v1/offers', {
     listingId: listing.id,
@@ -511,10 +512,15 @@ test('buyer can make best offer and seller can counter', async () => {
     assuranceAcknowledgement: true,
     expiresAt: futureIso()
   });
+  const fetchedOffer = await client.get(`/v1/offers/${offer.body.offer.id}`);
 
+  assert.equal(fetchedListing.status, 200);
+  assert.equal(fetchedListing.body.listing.id, listing.id);
   assert.equal(offer.status, 201);
   assert.equal(offer.body.offer.status, 'OPEN');
   assert.equal(offer.body.offer.totalPriceUsdc, '8.00');
+  assert.equal(fetchedOffer.status, 200);
+  assert.equal(fetchedOffer.body.offer.id, offer.body.offer.id);
 
   const counter = await client.post(`/v1/offers/${offer.body.offer.id}/counter`, {
     actorAgentId: seller.id,
@@ -528,6 +534,21 @@ test('buyer can make best offer and seller can counter', async () => {
   assert.equal(counter.body.offer.parentOfferId, offer.body.offer.id);
   assert.equal(counter.body.offer.createdByAgentId, seller.id);
   assert.equal(counter.body.offer.totalPriceUsdc, '9.00');
+});
+
+test('single-resource lookup endpoints return 404 for missing ids', async () => {
+  const client = createClient();
+
+  const listing = await client.get('/v1/listings/lst_missing');
+  const offer = await client.get('/v1/offers/off_missing');
+  const trade = await client.get('/v1/trades/trd_missing');
+
+  assert.equal(listing.status, 404);
+  assert.equal(listing.body.error, 'listing_not_found');
+  assert.equal(offer.status, 404);
+  assert.equal(offer.body.error, 'offer_not_found');
+  assert.equal(trade.status, 404);
+  assert.equal(trade.body.error, 'trade_not_found');
 });
 
 test('accepting a counteroffer creates reservation and trade with partial fill', async () => {
@@ -557,6 +578,7 @@ test('accepting a counteroffer creates reservation and trade with partial fill',
   );
   const reservations = await client.get('/v1/inventory/reservations');
   const market = await client.get(`/v1/listings/${listing.id}/market`);
+  const fetchedTrade = await client.get(`/v1/trades/${accepted.body.trade.id}`);
 
   assert.equal(accepted.status, 200);
   assert.equal(accepted.body.offer.status, 'ACCEPTED');
@@ -565,6 +587,8 @@ test('accepting a counteroffer creates reservation and trade with partial fill',
   assert.equal(accepted.body.trade.priceUsdc, '18.00');
   assert.equal(reservations.body.reservations.length, 1);
   assert.equal(market.body.market.bestAsk.availableQuantity, 8000);
+  assert.equal(fetchedTrade.status, 200);
+  assert.equal(fetchedTrade.body.trade.id, accepted.body.trade.id);
 });
 
 test('partial fills cannot oversell available inventory', async () => {

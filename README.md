@@ -51,11 +51,13 @@ npm run mcp
 - `POST /v1/agents/:id/verify/challenge`
 - `POST /v1/agents/:id/verify/response`
 - `GET /v1/listings`
+- `GET /v1/listings/:id`
 - `POST /v1/listings`
 - `GET /v1/listings/:id/offers`
 - `GET /v1/listings/:id/market`
 - `GET /v1/markets`
 - `GET /v1/offers`
+- `GET /v1/offers/:id`
 - `POST /v1/offers`
 - `POST /v1/offers/:id/counter`
 - `POST /v1/offers/:id/accept`
@@ -68,6 +70,7 @@ npm run mcp
 - `GET /v1/inventory/reservations`
 - `POST /v1/trades`
 - `GET /v1/trades`
+- `GET /v1/trades/:id`
 - `POST /v1/trades/:id/accept`
 - `POST /v1/trades/:id/deliver`
 - `POST /v1/trades/:id/confirm`

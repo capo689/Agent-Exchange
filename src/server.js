@@ -367,6 +367,13 @@ export async function handleApiRequest(
     return { status: 200, body: { listings: await store.listListings() } };
   }
 
+  const listingMatch = pathname.match(/^\/v1\/listings\/([^/]+)$/);
+  if (method === 'GET' && listingMatch) {
+    const listing = await store.getListing(listingMatch[1]);
+    if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
+    return { status: 200, body: { listing } };
+  }
+
   const listingOffersMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/offers$/);
   if (method === 'GET' && listingOffersMatch) {
     return {
@@ -624,8 +631,22 @@ export async function handleApiRequest(
     return { status: 200, body: { trades: await store.listTrades() } };
   }
 
+  const tradeMatch = pathname.match(/^\/v1\/trades\/([^/]+)$/);
+  if (method === 'GET' && tradeMatch) {
+    const trade = await store.getTrade(tradeMatch[1]);
+    if (!trade) return { status: 404, body: { error: 'trade_not_found' } };
+    return { status: 200, body: { trade } };
+  }
+
   if (method === 'GET' && pathname === '/v1/offers') {
     return { status: 200, body: { offers: await store.listOffers() } };
+  }
+
+  const offerMatch = pathname.match(/^\/v1\/offers\/([^/]+)$/);
+  if (method === 'GET' && offerMatch) {
+    const offer = await store.getOffer(offerMatch[1]);
+    if (!offer) return { status: 404, body: { error: 'offer_not_found' } };
+    return { status: 200, body: { offer } };
   }
 
   if (method === 'POST' && pathname === '/v1/offers') {

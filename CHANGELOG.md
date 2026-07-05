@@ -9,6 +9,7 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 - Added deploy smoke-test scripts for health, database reachability, and the full hosted reference-bot flow.
 - Added Supabase server-only hardening migration: direct `anon`/`authenticated` table access is denied, default public grants are revoked, and the inventory reservation function uses a fixed search path.
 - Added zero-dependency HTTP rate limiting with safe runtime config, `Retry-After`/`x-ratelimit-*` headers, and tests.
+- Added single-resource lookup endpoints and SDK helpers for listings, offers, and trades.
 
 ## 2026-07-04
 
