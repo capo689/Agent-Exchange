@@ -184,6 +184,19 @@ create table if not exists escrow_events (
   created_at timestamptz not null default now()
 );
 
+create table if not exists reputation_events (
+  id text primary key,
+  agent_id text not null references agents(id) on delete cascade,
+  trade_id text references trades(id) on delete set null,
+  role text not null check (role in ('buyer', 'seller')),
+  delta integer not null,
+  reason text not null,
+  previous_score integer not null check (previous_score between 0 and 100),
+  new_score integer not null check (new_score between 0 and 100),
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists moderation_events (
   id text primary key,
   type text not null,
@@ -210,6 +223,8 @@ create index if not exists inventory_reservations_listing_id_idx on inventory_re
 create index if not exists trades_buyer_agent_id_idx on trades(buyer_agent_id);
 create index if not exists trades_seller_agent_id_idx on trades(seller_agent_id);
 create index if not exists escrow_events_trade_id_idx on escrow_events(trade_id);
+create index if not exists reputation_events_agent_id_idx on reputation_events(agent_id);
+create index if not exists reputation_events_trade_id_idx on reputation_events(trade_id);
 create index if not exists idempotency_records_created_at_idx on idempotency_records(created_at);
 
 create or replace function reserve_listing_inventory(
@@ -307,6 +322,7 @@ alter table inventory_reservations enable row level security;
 alter table auto_accept_rules enable row level security;
 alter table trades enable row level security;
 alter table escrow_events enable row level security;
+alter table reputation_events enable row level security;
 alter table moderation_events enable row level security;
 alter table idempotency_records enable row level security;
 
@@ -352,6 +368,7 @@ begin
     'auto_accept_rules',
     'trades',
     'escrow_events',
+    'reputation_events',
     'moderation_events',
     'idempotency_records'
   ]

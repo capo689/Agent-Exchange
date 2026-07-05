@@ -34,6 +34,7 @@ function createInitialState() {
     trades: [],
     escrowEvents: [],
     moderationEvents: [],
+    reputationEvents: [],
     idempotencyRecords: []
   };
 }
@@ -47,6 +48,49 @@ function applyListQuery(items, { limit = 50, offset = 0, ...filters } = {}) {
     .filter((item) => Object.entries(filters).every(([key, value]) => value === undefined || item[key] === value))
     .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
     .slice(offset, offset + limit);
+}
+
+function clampReputation(value) {
+  return Math.max(0, Math.min(100, Number(value)));
+}
+
+function reputationImpacts({ transition, trade }) {
+  if (transition.to === 'DISPUTED') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: 0, reason: 'TRADE_DISPUTED' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: 0, reason: 'TRADE_DISPUTED' }
+    ];
+  }
+
+  if (transition.eventType === 'CONFIRMED_AND_CAPTURED') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: 1, reason: 'TRADE_CAPTURED' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: 3, reason: 'TRADE_CAPTURED' }
+    ];
+  }
+
+  if (transition.eventType === 'DISPUTE_RESOLVED_CAPTURE') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: -1, reason: 'DISPUTE_RESOLVED_CAPTURE' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: 2, reason: 'DISPUTE_RESOLVED_CAPTURE' }
+    ];
+  }
+
+  if (transition.eventType === 'REFUNDED') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: 1, reason: 'TRADE_REFUNDED' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: -3, reason: 'TRADE_REFUNDED' }
+    ];
+  }
+
+  if (transition.eventType === 'DISPUTE_RESOLVED_REFUND') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: 2, reason: 'DISPUTE_RESOLVED_REFUND' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: -4, reason: 'DISPUTE_RESOLVED_REFUND' }
+    ];
+  }
+
+  return [];
 }
 
 export function createStore({ filePath } = {}) {
@@ -66,6 +110,7 @@ export function createStore({ filePath } = {}) {
   const trades = mapById(state.trades);
   const escrowEvents = mapById(state.escrowEvents);
   const moderationEvents = state.moderationEvents;
+  const reputationEvents = mapById(state.reputationEvents ?? []);
   const idempotencyRecords = new Map(
     (state.idempotencyRecords ?? []).map((record) => [record.key, record])
   );
@@ -90,6 +135,7 @@ export function createStore({ filePath } = {}) {
           trades: [...trades.values()],
           escrowEvents: [...escrowEvents.values()],
           moderationEvents,
+          reputationEvents: [...reputationEvents.values()],
           idempotencyRecords: [...idempotencyRecords.values()]
         },
         null,
@@ -323,7 +369,7 @@ export function createStore({ filePath } = {}) {
         name: input.name,
         walletAddress: input.walletAddress ?? null,
         publicKeyJwk: input.publicKeyJwk ?? null,
-        reputationScore: Number(input.reputationScore ?? 0),
+        reputationScore: clampReputation(input.reputationScore ?? 0),
         verificationTier: input.publicKeyJwk ? 2 : 0,
         status: 'active',
         createdAt: now,
@@ -341,6 +387,12 @@ export function createStore({ filePath } = {}) {
 
     listAgents() {
       return [...agents.values()];
+    },
+
+    listReputationEvents(agentId) {
+      return [...reputationEvents.values()]
+        .filter((event) => event.agentId === agentId)
+        .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
     },
 
     cleanupExpired(now = new Date()) {
@@ -820,6 +872,31 @@ export function createStore({ filePath } = {}) {
         to: transition.to,
         payload: transition.payload ?? {}
       });
+
+      for (const impact of reputationImpacts({ transition, trade })) {
+        const agent = agents.get(impact.agentId);
+        if (!agent) continue;
+        const previousScore = agent.reputationScore;
+        const newScore = clampReputation(previousScore + impact.delta);
+        agent.reputationScore = newScore;
+        agent.updatedAt = nowIso();
+        const event = {
+          id: `rep_${randomUUID()}`,
+          agentId: impact.agentId,
+          tradeId: trade.id,
+          role: impact.role,
+          delta: impact.delta,
+          reason: impact.reason,
+          previousScore,
+          newScore,
+          metadata: {
+            transition: transition.eventType,
+            tradeState: transition.to
+          },
+          createdAt: nowIso()
+        };
+        reputationEvents.set(event.id, event);
+      }
       persist();
       return trade;
     },

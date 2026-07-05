@@ -47,6 +47,8 @@ npm run mcp
 - `GET /v1/policy`
 - `GET /v1/categories`
 - `GET /v1/agents`
+- `GET /v1/agents/:id`
+- `GET /v1/agents/:id/reputation`
 - `POST /v1/agents/register`
 - `POST /v1/agents/:id/verify/challenge`
 - `POST /v1/agents/:id/verify/response`

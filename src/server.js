@@ -514,6 +514,26 @@ export async function handleApiRequest(
     return { status: 200, body: { agents: await store.listAgents() } };
   }
 
+  const agentReputationMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/reputation$/);
+  if (method === 'GET' && agentReputationMatch) {
+    const agent = await store.getAgent(agentReputationMatch[1]);
+    if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    return {
+      status: 200,
+      body: {
+        agent,
+        reputationEvents: await store.listReputationEvents(agent.id)
+      }
+    };
+  }
+
+  const agentMatch = pathname.match(/^\/v1\/agents\/([^/]+)$/);
+  if (method === 'GET' && agentMatch) {
+    const agent = await store.getAgent(agentMatch[1]);
+    if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    return { status: 200, body: { agent } };
+  }
+
   if (method === 'POST' && pathname === '/v1/maintenance/cleanup') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;

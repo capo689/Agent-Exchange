@@ -25,6 +25,10 @@ function jsonb(value) {
   return JSON.stringify(value);
 }
 
+function clampReputation(value) {
+  return Math.max(0, Math.min(100, Number(value)));
+}
+
 function iso(value) {
   return value instanceof Date ? value.toISOString() : value;
 }
@@ -56,6 +60,45 @@ async function selectFiltered({ query, table, columns, filters = {}, baseWhere =
     `select * from ${table}${where} order by created_at desc limit $${params.length - 1} offset $${params.length}`,
     params
   );
+}
+
+function reputationImpacts({ transition, trade }) {
+  if (transition.to === 'DISPUTED') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: 0, reason: 'TRADE_DISPUTED' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: 0, reason: 'TRADE_DISPUTED' }
+    ];
+  }
+
+  if (transition.eventType === 'CONFIRMED_AND_CAPTURED') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: 1, reason: 'TRADE_CAPTURED' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: 3, reason: 'TRADE_CAPTURED' }
+    ];
+  }
+
+  if (transition.eventType === 'DISPUTE_RESOLVED_CAPTURE') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: -1, reason: 'DISPUTE_RESOLVED_CAPTURE' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: 2, reason: 'DISPUTE_RESOLVED_CAPTURE' }
+    ];
+  }
+
+  if (transition.eventType === 'REFUNDED') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: 1, reason: 'TRADE_REFUNDED' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: -3, reason: 'TRADE_REFUNDED' }
+    ];
+  }
+
+  if (transition.eventType === 'DISPUTE_RESOLVED_REFUND') {
+    return [
+      { agentId: trade.buyerAgentId, role: 'buyer', delta: 2, reason: 'DISPUTE_RESOLVED_REFUND' },
+      { agentId: trade.sellerAgentId, role: 'seller', delta: -4, reason: 'DISPUTE_RESOLVED_REFUND' }
+    ];
+  }
+
+  return [];
 }
 
 function agentFromRow(row) {
@@ -208,6 +251,22 @@ function escrowEventFromRow(row) {
     actor: row.actor,
     adapter: row.adapter,
     payload: row.payload ?? {},
+    createdAt: iso(row.created_at)
+  };
+}
+
+function reputationEventFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    tradeId: row.trade_id,
+    role: row.role,
+    delta: row.delta,
+    reason: row.reason,
+    previousScore: row.previous_score,
+    newScore: row.new_score,
+    metadata: row.metadata ?? {},
     createdAt: iso(row.created_at)
   };
 }
@@ -444,7 +503,7 @@ export function createPostgresStore({ connectionString }) {
           input.name,
           input.walletAddress ?? null,
           input.publicKeyJwk ? jsonb(input.publicKeyJwk) : null,
-          Number(input.reputationScore ?? 0),
+          clampReputation(input.reputationScore ?? 0),
           input.publicKeyJwk ? 2 : 0,
           'active'
         ]
@@ -460,6 +519,14 @@ export function createPostgresStore({ connectionString }) {
     async listAgents() {
       const { rows } = await query('select * from agents order by created_at desc');
       return rows.map(agentFromRow);
+    },
+
+    async listReputationEvents(agentId) {
+      const { rows } = await query(
+        'select * from reputation_events where agent_id = $1 order by created_at desc',
+        [agentId]
+      );
+      return rows.map(reputationEventFromRow);
     },
 
     async cleanupExpired(now = new Date()) {
@@ -994,26 +1061,76 @@ export function createPostgresStore({ connectionString }) {
     },
 
     async transitionTrade(tradeId, transition) {
-      const trade = await this.getTrade(tradeId);
-      if (!trade) return null;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const tradeResult = await client.query('select * from trades where id = $1 for update', [tradeId]);
+        const trade = tradeFromRow(tradeResult.rows[0]);
+        if (!trade) {
+          await client.query('rollback');
+          return null;
+        }
 
-      const event = {
-        at: nowIso(),
-        type: transition.eventType,
-        actor: transition.actor,
-        from: trade.state,
-        to: transition.to,
-        payload: transition.payload ?? {}
-      };
-      const events = [...trade.events, event];
-      const { rows } = await query(
-        `update trades
-         set state = $2, events = $3::jsonb, updated_at = now()
-         where id = $1
-         returning *`,
-        [tradeId, transition.to, jsonb(events)]
-      );
-      return tradeFromRow(rows[0]);
+        const event = {
+          at: nowIso(),
+          type: transition.eventType,
+          actor: transition.actor,
+          from: trade.state,
+          to: transition.to,
+          payload: transition.payload ?? {}
+        };
+        const events = [...trade.events, event];
+        const updatedTradeResult = await client.query(
+          `update trades
+           set state = $2, events = $3::jsonb, updated_at = now()
+           where id = $1
+           returning *`,
+          [tradeId, transition.to, jsonb(events)]
+        );
+        const updatedTrade = tradeFromRow(updatedTradeResult.rows[0]);
+
+        for (const impact of reputationImpacts({ transition, trade: updatedTrade })) {
+          const agentResult = await client.query('select * from agents where id = $1 for update', [impact.agentId]);
+          const agent = agentFromRow(agentResult.rows[0]);
+          if (!agent) continue;
+
+          const previousScore = agent.reputationScore;
+          const newScore = clampReputation(previousScore + impact.delta);
+          await client.query(
+            `update agents
+             set reputation_score = $2, updated_at = now()
+             where id = $1`,
+            [impact.agentId, newScore]
+          );
+          await client.query(
+            `insert into reputation_events (
+              id, agent_id, trade_id, role, delta, reason, previous_score, new_score, metadata
+            ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
+            [
+              `rep_${randomUUID()}`,
+              impact.agentId,
+              updatedTrade.id,
+              impact.role,
+              impact.delta,
+              impact.reason,
+              previousScore,
+              newScore,
+              jsonb({
+                transition: transition.eventType,
+                tradeState: transition.to
+              })
+            ]
+          );
+        }
+
+        await client.query('commit');
+        return updatedTrade;
+      } catch (error) {
+        await client.query('rollback');
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     async createEscrowEvent({ tradeId, type, amountUsdc, actor, payload = {} }) {

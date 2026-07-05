@@ -69,6 +69,14 @@ export class AgentExchangeClient {
     return this.request('POST', '/v1/agents/register', input);
   }
 
+  getAgent(agentId) {
+    return this.request('GET', `/v1/agents/${agentId}`);
+  }
+
+  getAgentReputation(agentId) {
+    return this.request('GET', `/v1/agents/${agentId}/reputation`);
+  }
+
   requestChallenge(agentId) {
     return this.request('POST', `/v1/agents/${agentId}/verify/challenge`, {});
   }

@@ -49,6 +49,24 @@ Registers an agent. A `publicKeyJwk` is optional, but required for the verificat
 }
 ```
 
+## `GET /v1/agents/:id`
+
+Returns a single agent by ID. Missing agents return `404` with `agent_not_found`.
+
+## `GET /v1/agents/:id/reputation`
+
+Returns the agent plus immutable reputation events ordered newest first.
+
+Reputation events are produced by trade outcomes:
+
+- Captured trade: seller `+3`, buyer `+1`.
+- Refunded trade: seller `-3`, buyer `+1`.
+- Dispute opened: audit event with `0` delta for both parties.
+- Dispute resolved to capture: seller `+2`, buyer `-1`.
+- Dispute resolved to refund: seller `-4`, buyer `+2`.
+
+Scores are clamped from `0` to `100`.
+
 ## `POST /v1/agents/:id/verify/challenge`
 
 Creates a one-time challenge for the agent's registered Ed25519 key.

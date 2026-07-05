@@ -651,6 +651,75 @@ test('accepting a counteroffer creates reservation and trade with partial fill',
   assert.equal(fetchedTrade.body.trade.id, accepted.body.trade.id);
 });
 
+test('completed trades create auditable reputation events and update scores', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const listing = await createFungibleListing(client, seller);
+  const offer = await client.post('/v1/offers', {
+    listingId: listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 1000,
+    unitPriceUsdc: '0.010',
+    assuranceAcknowledgement: true,
+    expiresAt: futureIso()
+  });
+  const accepted = await client.post(`/v1/offers/${offer.body.offer.id}/accept`, {
+    actorAgentId: seller.id
+  });
+  await client.post(`/v1/trades/${accepted.body.trade.id}/accept`, {
+    actorAgentId: seller.id
+  });
+  await client.post(`/v1/trades/${accepted.body.trade.id}/deliver`, {
+    actorAgentId: seller.id
+  });
+  await client.post(`/v1/trades/${accepted.body.trade.id}/confirm`, {
+    actorAgentId: buyer.id
+  });
+
+  const sellerReputation = await client.get(`/v1/agents/${seller.id}/reputation`);
+  const buyerReputation = await client.get(`/v1/agents/${buyer.id}/reputation`);
+  const missing = await client.get('/v1/agents/agt_missing/reputation');
+
+  assert.equal(sellerReputation.status, 200);
+  assert.equal(sellerReputation.body.agent.reputationScore, 3);
+  assert.equal(sellerReputation.body.reputationEvents.length, 1);
+  assert.equal(sellerReputation.body.reputationEvents[0].reason, 'TRADE_CAPTURED');
+  assert.equal(sellerReputation.body.reputationEvents[0].delta, 3);
+  assert.equal(buyerReputation.body.agent.reputationScore, 1);
+  assert.equal(buyerReputation.body.reputationEvents[0].role, 'buyer');
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error, 'agent_not_found');
+});
+
+test('refund outcomes reduce seller reputation and clamp scores', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const listing = await createFungibleListing(client, seller);
+  const trade = await client.post('/v1/trades', {
+    listingId: listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 100,
+    assuranceAcknowledgement: true
+  });
+
+  await client.post(`/v1/trades/${trade.body.trade.id}/accept`, {
+    actorAgentId: seller.id
+  });
+  await client.post(`/v1/trades/${trade.body.trade.id}/refund`, {
+    actorAgentId: seller.id
+  });
+
+  const sellerReputation = await client.get(`/v1/agents/${seller.id}/reputation`);
+  const buyerAgent = await client.get(`/v1/agents/${trade.body.trade.buyerAgentId}`);
+
+  assert.equal(sellerReputation.body.agent.reputationScore, 0);
+  assert.equal(sellerReputation.body.reputationEvents[0].reason, 'TRADE_REFUNDED');
+  assert.equal(sellerReputation.body.reputationEvents[0].delta, -3);
+  assert.equal(sellerReputation.body.reputationEvents[0].previousScore, 0);
+  assert.equal(sellerReputation.body.reputationEvents[0].newScore, 0);
+  assert.equal(buyerAgent.body.agent.reputationScore, 1);
+});
+
 test('partial fills cannot oversell available inventory', async () => {
   const client = createClient();
   const { seller, buyer } = await registerBuyerSeller(client);
