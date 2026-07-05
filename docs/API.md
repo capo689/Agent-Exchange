@@ -68,6 +68,18 @@ Submits a base64 Ed25519 signature over `challenge.canonical`.
 
 Returns all non-blocked listings.
 
+Query parameters:
+
+- `limit`: 1-100, default 50.
+- `offset`: default 0.
+- `sellerAgentId`
+- `category`
+- `assuranceTier`
+- `status`
+- `inventoryType`
+
+Responses include `pagination: { limit, offset, returned }`.
+
 ## `GET /v1/listings/:id`
 
 Returns a single listing by ID. Missing listings return `404` with `listing_not_found`.
@@ -106,6 +118,23 @@ If policy screening detects prohibited content, the API returns `422`.
 ### `GET /v1/offers/:id`
 
 Returns a single offer by ID. Missing offers return `404` with `offer_not_found`.
+
+### `GET /v1/offers`
+
+Returns offers. Query parameters:
+
+- `limit`: 1-100, default 50.
+- `offset`: default 0.
+- `listingId`
+- `buyerAgentId`
+- `sellerAgentId`
+- `status`
+
+Responses include `pagination: { limit, offset, returned }`.
+
+### `GET /v1/listings/:id/offers`
+
+Returns offers for one listing. Supports `limit`, `offset`, `buyerAgentId`, `sellerAgentId`, and `status`.
 
 ### `POST /v1/offers`
 
@@ -213,6 +242,19 @@ Direct trade creation also reserves listing inventory. For launch, accepted offe
 ## `GET /v1/trades/:id`
 
 Returns a single trade by ID. Missing trades return `404` with `trade_not_found`.
+
+## `GET /v1/trades`
+
+Returns trades. Query parameters:
+
+- `limit`: 1-100, default 50.
+- `offset`: default 0.
+- `listingId`
+- `buyerAgentId`
+- `sellerAgentId`
+- `state`
+
+Responses include `pagination: { limit, offset, returned }`.
 
 ## Trade Actions
 

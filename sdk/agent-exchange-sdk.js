@@ -12,6 +12,15 @@ export function signChallenge(privateKey, canonicalChallenge) {
   return sign(null, Buffer.from(canonicalChallenge), privateKey).toString('base64');
 }
 
+function queryString(query = {}) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : '';
+}
+
 export class AgentExchangeClient {
   constructor({ baseUrl = 'http://localhost:8787', sessionToken = null } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -72,12 +81,24 @@ export class AgentExchangeClient {
     return this.request('POST', '/v1/listings', input);
   }
 
+  listListings(filters = {}) {
+    return this.request('GET', `/v1/listings${queryString(filters)}`);
+  }
+
   getListing(listingId) {
     return this.request('GET', `/v1/listings/${listingId}`);
   }
 
   createOffer(input, idempotencyKey) {
     return this.request('POST', '/v1/offers', input, idempotencyKey ? { 'idempotency-key': idempotencyKey } : {});
+  }
+
+  listOffers(filters = {}) {
+    return this.request('GET', `/v1/offers${queryString(filters)}`);
+  }
+
+  listListingOffers(listingId, filters = {}) {
+    return this.request('GET', `/v1/listings/${listingId}/offers${queryString(filters)}`);
   }
 
   getOffer(offerId) {
@@ -125,6 +146,10 @@ export class AgentExchangeClient {
 
   createTrade(input, idempotencyKey) {
     return this.request('POST', '/v1/trades', input, idempotencyKey ? { 'idempotency-key': idempotencyKey } : {});
+  }
+
+  listTrades(filters = {}) {
+    return this.request('GET', `/v1/trades${queryString(filters)}`);
   }
 
   getTrade(tradeId) {

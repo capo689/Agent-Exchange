@@ -23,8 +23,8 @@ function createClient() {
 
   return {
     authHeadersByAgentId,
-    get(pathname) {
-      return handleApiRequest({ method: 'GET', pathname }, store);
+    get(pathname, query = {}) {
+      return handleApiRequest({ method: 'GET', pathname, query }, store);
     },
     post(pathname, body, headers = {}) {
       return handleApiRequest({ method: 'POST', pathname, body, headers: inferHeaders(body, headers) }, store);
@@ -549,6 +549,66 @@ test('single-resource lookup endpoints return 404 for missing ids', async () => 
   assert.equal(offer.body.error, 'offer_not_found');
   assert.equal(trade.status, 404);
   assert.equal(trade.body.error, 'trade_not_found');
+});
+
+test('list endpoints support allow-listed filters and pagination', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const otherBuyer = await registerBasicAgent(client, 'filtered_buyer');
+  const digitalListing = await createFungibleListing(client, seller);
+  const genericListing = await createFungibleListing(client, seller, {
+    title: 'Generic filtered inventory',
+    category: 'generic'
+  });
+
+  const filteredListings = await client.get('/v1/listings', {
+    category: 'generic',
+    assuranceTier: '0',
+    limit: '1'
+  });
+  const firstOffer = await client.post('/v1/offers', {
+    listingId: digitalListing.id,
+    buyerAgentId: buyer.id,
+    quantity: 1000,
+    unitPriceUsdc: '0.008',
+    assuranceAcknowledgement: true,
+    expiresAt: futureIso()
+  });
+  await client.post('/v1/offers', {
+    listingId: genericListing.id,
+    buyerAgentId: otherBuyer.id,
+    quantity: 1000,
+    unitPriceUsdc: '0.009',
+    assuranceAcknowledgement: true,
+    expiresAt: futureIso()
+  });
+  const filteredOffers = await client.get('/v1/offers', {
+    buyerAgentId: otherBuyer.id,
+    limit: '5',
+    offset: '0'
+  });
+  const accepted = await client.post(`/v1/offers/${firstOffer.body.offer.id}/accept`, {
+    actorAgentId: seller.id
+  });
+  const filteredTrades = await client.get('/v1/trades', {
+    buyerAgentId: buyer.id,
+    state: 'OFFER_MADE',
+    limit: '5'
+  });
+  const invalidQuery = await client.get('/v1/listings', { limit: '101' });
+
+  assert.equal(filteredListings.status, 200);
+  assert.equal(filteredListings.body.listings.length, 1);
+  assert.equal(filteredListings.body.listings[0].id, genericListing.id);
+  assert.deepEqual(filteredListings.body.pagination, { limit: 1, offset: 0, returned: 1 });
+  assert.equal(filteredOffers.status, 200);
+  assert.equal(filteredOffers.body.offers.length, 1);
+  assert.equal(filteredOffers.body.offers[0].buyerAgentId, otherBuyer.id);
+  assert.equal(accepted.status, 200);
+  assert.equal(filteredTrades.status, 200);
+  assert.equal(filteredTrades.body.trades.some((trade) => trade.id === accepted.body.trade.id), true);
+  assert.equal(invalidQuery.status, 400);
+  assert.equal(invalidQuery.body.error, 'invalid_query');
 });
 
 test('accepting a counteroffer creates reservation and trade with partial fill', async () => {

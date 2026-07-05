@@ -42,6 +42,13 @@ function mapById(items) {
   return new Map(items.map((item) => [item.id, item]));
 }
 
+function applyListQuery(items, { limit = 50, offset = 0, ...filters } = {}) {
+  return items
+    .filter((item) => Object.entries(filters).every(([key, value]) => value === undefined || item[key] === value))
+    .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
+    .slice(offset, offset + limit);
+}
+
 export function createStore({ filePath } = {}) {
   const state = filePath && existsSync(filePath)
     ? JSON.parse(readFileSync(filePath, 'utf8'))
@@ -449,8 +456,11 @@ export function createStore({ filePath } = {}) {
       return null;
     },
 
-    listListings() {
-      return [...listings.values()].filter((listing) => listing.status !== 'blocked');
+    listListings(filters = {}) {
+      return applyListQuery(
+        [...listings.values()].filter((listing) => listing.status !== 'blocked'),
+        filters
+      );
     },
 
     getListing(id) {
@@ -623,8 +633,8 @@ export function createStore({ filePath } = {}) {
       return offers.get(id) ?? null;
     },
 
-    listOffers({ listingId } = {}) {
-      return [...offers.values()].filter((offer) => !listingId || offer.listingId === listingId);
+    listOffers(filters = {}) {
+      return applyListQuery([...offers.values()], filters);
     },
 
     listOfferEvents(offerId) {
@@ -793,8 +803,8 @@ export function createStore({ filePath } = {}) {
       return trades.get(id) ?? null;
     },
 
-    listTrades() {
-      return [...trades.values()];
+    listTrades(filters = {}) {
+      return applyListQuery([...trades.values()], filters);
     },
 
     transitionTrade(tradeId, transition) {

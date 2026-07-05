@@ -81,6 +81,8 @@ npm run mcp
 
 See [docs/API.md](docs/API.md) and [docs/POLICY.md](docs/POLICY.md).
 
+List endpoints support `limit`/`offset` pagination plus allow-listed filters for listings, offers, and trades.
+
 ## Production Discipline
 
 - FINISHER baseline: [docs/FINISHER_BASELINE.md](docs/FINISHER_BASELINE.md)

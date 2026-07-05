@@ -14,6 +14,8 @@ const runtimeConfig = getConfig();
 const defaultStore = runtimeConfig.databaseUrl
   ? createPostgresStore({ connectionString: runtimeConfig.databaseUrl })
   : createStore(runtimeConfig.dataDir ? { filePath: `${runtimeConfig.dataDir}/agent-exchange.json` } : {});
+const DEFAULT_LIST_LIMIT = 50;
+const MAX_LIST_LIMIT = 100;
 
 function json(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload, null, 2);
@@ -152,6 +154,63 @@ function validateAutoAcceptRuleInput(input) {
   }
 
   return errors;
+}
+
+function parseIntegerQuery(value, { name, defaultValue, min = 0, max = MAX_LIST_LIMIT }) {
+  if (value === undefined) return { value: defaultValue };
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    return { error: `${name} must be an integer between ${min} and ${max}` };
+  }
+  return { value: parsed };
+}
+
+function parseListQuery(query, filterConfig) {
+  const limit = parseIntegerQuery(query.limit, {
+    name: 'limit',
+    defaultValue: DEFAULT_LIST_LIMIT,
+    min: 1,
+    max: MAX_LIST_LIMIT
+  });
+  const offset = parseIntegerQuery(query.offset, {
+    name: 'offset',
+    defaultValue: 0,
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER
+  });
+  const errors = [limit.error, offset.error].filter(Boolean);
+  const filters = {
+    limit: limit.value,
+    offset: offset.value
+  };
+
+  for (const [name, options = {}] of Object.entries(filterConfig)) {
+    if (query[name] === undefined || query[name] === '') continue;
+    if (options.type === 'integer') {
+      const parsed = Number(query[name]);
+      if (!Number.isInteger(parsed)) {
+        errors.push(`${name} must be an integer`);
+      } else {
+        filters[name] = parsed;
+      }
+      continue;
+    }
+    filters[name] = query[name];
+  }
+
+  if (errors.length > 0) return { errors };
+  return { filters };
+}
+
+function paginatedBody(key, items, filters) {
+  return {
+    [key]: items,
+    pagination: {
+      limit: filters.limit,
+      offset: filters.offset,
+      returned: items.length
+    }
+  };
 }
 
 function getHeader(headers, name) {
@@ -314,7 +373,7 @@ function authorizeTradeAction({ rawAction, trade, actor, body }) {
 }
 
 export async function handleApiRequest(
-  { method, pathname, body = {}, headers = {} },
+  { method, pathname, body = {}, headers = {}, query = {} },
   store = defaultStore
 ) {
   if (method === 'GET' && pathname === '/v1/health') {
@@ -364,7 +423,16 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/listings') {
-    return { status: 200, body: { listings: await store.listListings() } };
+    const listQuery = parseListQuery(query, {
+      sellerAgentId: {},
+      category: {},
+      assuranceTier: { type: 'integer' },
+      status: {},
+      inventoryType: {}
+    });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    const listings = await store.listListings(listQuery.filters);
+    return { status: 200, body: paginatedBody('listings', listings, listQuery.filters) };
   }
 
   const listingMatch = pathname.match(/^\/v1\/listings\/([^/]+)$/);
@@ -376,11 +444,17 @@ export async function handleApiRequest(
 
   const listingOffersMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/offers$/);
   if (method === 'GET' && listingOffersMatch) {
+    const listQuery = parseListQuery(query, {
+      buyerAgentId: {},
+      sellerAgentId: {},
+      status: {}
+    });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    const filters = { ...listQuery.filters, listingId: listingOffersMatch[1] };
+    const offers = await store.listOffers(filters);
     return {
       status: 200,
-      body: {
-        offers: await store.listOffers({ listingId: listingOffersMatch[1] })
-      }
+      body: paginatedBody('offers', offers, filters)
     };
   }
 
@@ -628,7 +702,15 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/trades') {
-    return { status: 200, body: { trades: await store.listTrades() } };
+    const listQuery = parseListQuery(query, {
+      listingId: {},
+      buyerAgentId: {},
+      sellerAgentId: {},
+      state: {}
+    });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    const trades = await store.listTrades(listQuery.filters);
+    return { status: 200, body: paginatedBody('trades', trades, listQuery.filters) };
   }
 
   const tradeMatch = pathname.match(/^\/v1\/trades\/([^/]+)$/);
@@ -639,7 +721,15 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/offers') {
-    return { status: 200, body: { offers: await store.listOffers() } };
+    const listQuery = parseListQuery(query, {
+      listingId: {},
+      buyerAgentId: {},
+      sellerAgentId: {},
+      status: {}
+    });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    const offers = await store.listOffers(listQuery.filters);
+    return { status: 200, body: paginatedBody('offers', offers, listQuery.filters) };
   }
 
   const offerMatch = pathname.match(/^\/v1\/offers\/([^/]+)$/);
@@ -921,6 +1011,7 @@ export function createApp({
         {
           method: req.method,
           pathname: url.pathname,
+          query: Object.fromEntries(url.searchParams.entries()),
           body,
           headers: req.headers
         },

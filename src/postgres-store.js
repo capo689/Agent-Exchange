@@ -36,6 +36,28 @@ function makePool(connectionString) {
   return new Pool({ connectionString, ssl });
 }
 
+function addWhere(clauses, params, column, value) {
+  if (value === undefined || value === null || value === '') return;
+  params.push(value);
+  clauses.push(`${column} = $${params.length}`);
+}
+
+async function selectFiltered({ query, table, columns, filters = {}, baseWhere = [] }) {
+  const params = [];
+  const clauses = [...baseWhere];
+  for (const [filterKey, column] of Object.entries(columns)) {
+    addWhere(clauses, params, column, filters[filterKey]);
+  }
+  const limit = Number(filters.limit ?? 50);
+  const offset = Number(filters.offset ?? 0);
+  params.push(limit, offset);
+  const where = clauses.length ? ` where ${clauses.join(' and ')}` : '';
+  return query(
+    `select * from ${table}${where} order by created_at desc limit $${params.length - 1} offset $${params.length}`,
+    params
+  );
+}
+
 function agentFromRow(row) {
   if (!row) return null;
   return {
@@ -530,8 +552,20 @@ export function createPostgresStore({ connectionString }) {
       };
     },
 
-    async listListings() {
-      const { rows } = await query("select * from listings where status <> 'blocked' order by created_at desc");
+    async listListings(filters = {}) {
+      const { rows } = await selectFiltered({
+        query,
+        table: 'listings',
+        baseWhere: ["status <> 'blocked'"],
+        columns: {
+          sellerAgentId: 'seller_agent_id',
+          category: 'category',
+          assuranceTier: 'assurance_tier',
+          status: 'status',
+          inventoryType: 'inventory_type'
+        },
+        filters
+      });
       return rows.map(listingFromRow);
     },
 
@@ -758,10 +792,18 @@ export function createPostgresStore({ connectionString }) {
       return offerFromRow(rows[0]);
     },
 
-    async listOffers({ listingId } = {}) {
-      const result = listingId
-        ? await query('select * from offers where listing_id = $1 order by created_at desc', [listingId])
-        : await query('select * from offers order by created_at desc');
+    async listOffers(filters = {}) {
+      const result = await selectFiltered({
+        query,
+        table: 'offers',
+        columns: {
+          listingId: 'listing_id',
+          buyerAgentId: 'buyer_agent_id',
+          sellerAgentId: 'seller_agent_id',
+          status: 'status'
+        },
+        filters
+      });
       return result.rows.map(offerFromRow);
     },
 
@@ -936,8 +978,18 @@ export function createPostgresStore({ connectionString }) {
       return tradeFromRow(rows[0]);
     },
 
-    async listTrades() {
-      const { rows } = await query('select * from trades order by created_at desc');
+    async listTrades(filters = {}) {
+      const { rows } = await selectFiltered({
+        query,
+        table: 'trades',
+        columns: {
+          listingId: 'listing_id',
+          buyerAgentId: 'buyer_agent_id',
+          sellerAgentId: 'seller_agent_id',
+          state: 'state'
+        },
+        filters
+      });
       return rows.map(tradeFromRow);
     },
 
