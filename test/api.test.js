@@ -10,6 +10,7 @@ import {
 import { encodeAbiParameters, encodeEventTopics } from 'viem';
 import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
 import { escrowContractAbi, escrowTradeIdHash } from '../src/escrow-contract.js';
+import { runEscrowWatcher } from '../src/escrow-watcher.js';
 import { signRequestHeaders } from '../sdk/agent-exchange-sdk.js';
 import { createRateLimiter } from '../src/rate-limit.js';
 import { createApp, handleApiRequest } from '../src/server.js';
@@ -1165,6 +1166,80 @@ test('smart contract escrow events fund and release trades through verified rece
     if (previousEnv.provider === undefined) delete process.env.PAYMENT_PROVIDER;
     else process.env.PAYMENT_PROVIDER = previousEnv.provider;
   }
+});
+
+test('escrow watcher records matched smart contract logs idempotently', async () => {
+  const client = createClient();
+  const contractAddress = '0x1111111111111111111111111111111111111111';
+  const buyerWallet = '0x2222222222222222222222222222222222222222';
+  const sellerWallet = '0x3333333333333333333333333333333333333333';
+  const seller = await registerBasicAgent(client, 'watcher_seller', { walletAddress: sellerWallet });
+  const buyer = await registerBasicAgent(client, 'watcher_buyer', { walletAddress: buyerWallet });
+  const listing = await createFungibleListing(client, seller, {
+    totalQuantity: 1000,
+    maxFillQuantity: 1000
+  });
+  const tradeResult = await client.post('/v1/trades', {
+    listingId: listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 100,
+    assuranceAcknowledgement: true
+  });
+  const trade = tradeResult.body.trade;
+  const log = {
+    ...escrowFundedLog({
+      contractAddress,
+      tradeId: trade.id,
+      buyer: buyerWallet,
+      seller: sellerWallet,
+      amount: usdcToAtomicAmount(trade.priceUsdc)
+    }),
+    transactionHash: '0x' + 'a'.repeat(64),
+    blockNumber: '0x10',
+    logIndex: '0x0'
+  };
+  const fetchFn = async (_url, init) => {
+    const request = JSON.parse(init.body);
+    if (request.method === 'eth_blockNumber') {
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x10' }) };
+    }
+    if (request.method === 'eth_getLogs') {
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: [log] }) };
+    }
+    throw new Error(`unexpected rpc method ${request.method}`);
+  };
+  const config = getConfig({
+    ESCROW_CONTRACT_ADDRESS: contractAddress,
+    ESCROW_NETWORK: 'eip155:84532',
+    ESCROW_RPC_URL: 'https://rpc.test'
+  });
+
+  const first = await runEscrowWatcher({
+    store: client.store,
+    config,
+    fromBlock: 16,
+    toBlock: 16,
+    fetchFn
+  });
+  const second = await runEscrowWatcher({
+    store: client.store,
+    config,
+    fromBlock: 16,
+    toBlock: 16,
+    fetchFn
+  });
+  const events = await client.adminGet('/v1/admin/events', {
+    resourceType: 'trade',
+    resourceId: trade.id,
+    type: 'escrow.watcher.event.observed'
+  });
+
+  assert.equal(first.ok, true);
+  assert.equal(first.eventsObserved, 1);
+  assert.equal(first.events[0].resourceId, trade.id);
+  assert.equal(first.events[0].payload.eventName, 'EscrowFunded');
+  assert.equal(second.ok, true);
+  assert.equal(events.body.events.length, 1);
 });
 
 test('stale trade transition recheck prevents split escrow writes', async () => {

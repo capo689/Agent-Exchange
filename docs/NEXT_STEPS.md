@@ -4,7 +4,7 @@
 2. Add developer ownership and RLS-backed authorization on top of bearer sessions, signed requests, and scoped API keys.
 3. Run `npm run hosted:concurrency` after each hosted DB/schema change that touches inventory or reservations.
 4. Security-review and deploy `contracts/AgentExchangeEscrow.sol` on Base Sepolia before any real escrow funds are used.
-5. Add an escrow watcher job that observes contract events and repairs or flags missing API callbacks.
+5. Add watcher-driven repair controls for verified contract events that safely advance stuck trades.
 6. Add durable outbound webhook subscriptions with retries, dead-letter visibility, and per-subscriber rate limits beyond the current single-target HMAC delivery.
 7. Add x402 middleware around additional paid endpoints.
 8. Add a Python SDK skeleton and cross-SDK contract tests.

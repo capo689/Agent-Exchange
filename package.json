@@ -11,6 +11,7 @@
     "smoke:deploy:bot": "node scripts/smoke-deploy.js --bot",
     "private-alpha:check": "node scripts/private-alpha-check.js",
     "demo:beta": "node scripts/beta-demo.js",
+    "escrow:watch": "node scripts/escrow-watcher.js",
     "reconcile": "node scripts/reconcile.js",
     "hosted:concurrency": "node scripts/hosted-concurrency-check.js",
     "backup:drill": "node scripts/backup-restore-drill.js",

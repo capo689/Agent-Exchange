@@ -231,6 +231,52 @@ Expected result: `SMART_CONTRACT_FUND` and `SMART_CONTRACT_RELEASE` escrow event
 
 Refund path: seller or arbitrator calls `refund(tradeIdHash)`, then seller/admin posts the transaction hash to `/v1/trades/<trade_id>/refund-onchain`.
 
+## Escrow Watcher
+
+The watcher scans the configured escrow contract for `EscrowFunded`, `EscrowReleased`, and `EscrowRefunded` logs. It records audit events and reconciliation findings, but does not automatically mutate trade state yet.
+
+Required environment:
+
+```bash
+ESCROW_CONTRACT_ADDRESS=<deployed_escrow_contract>
+ESCROW_NETWORK=eip155:84532
+ESCROW_RPC_URL=<base_sepolia_rpc_url>
+ADMIN_TOKEN=<render_admin_token>
+```
+
+Check status:
+
+```bash
+curl -sS "$AGENT_EXCHANGE_URL/v1/admin/escrow-watcher/status" \
+  -H "x-admin-token: $ADMIN_TOKEN"
+```
+
+Run a bounded scan:
+
+```bash
+ADMIN_TOKEN=<render_admin_token> \
+AGENT_EXCHANGE_URL=https://ax-7508.onrender.com \
+ESCROW_WATCHER_FROM_BLOCK=<from_block> \
+ESCROW_WATCHER_TO_BLOCK=<to_block> \
+npm run escrow:watch
+```
+
+Run a recent lookback scan:
+
+```bash
+ADMIN_TOKEN=<render_admin_token> \
+AGENT_EXCHANGE_URL=https://ax-7508.onrender.com \
+ESCROW_WATCHER_LOOKBACK_BLOCKS=500 \
+npm run escrow:watch
+```
+
+Expected audit events:
+
+- `escrow.watcher.event.observed`: matched contract event.
+- `escrow.watcher.unmatched.event`: contract event did not map to a known trade hash.
+- `escrow.watcher.state.warning`: event matches a trade but appears out of expected state order.
+- `escrow.watcher.conflicting.event`: event conflicts with marketplace records.
+
 ## x402 Gateway Connection
 
 x402 is a Coinbase/CDP stablecoin payment rail for exact direct payments. It is useful for paid endpoints and probes, but it is not escrow because exact payments settle immediately rather than holding funds in a release/refund contract.

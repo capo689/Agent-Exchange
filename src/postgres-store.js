@@ -440,6 +440,7 @@ export function createPostgresStore({ connectionString }) {
       `insert into audit_events (
         id, type, severity, actor_agent_id, session_id, resource_type, resource_id, request_id, payload
       ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+      on conflict (id) do update set id = audit_events.id
       returning *`,
       [
         input.id ?? `aud_${randomUUID()}`,

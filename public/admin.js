@@ -211,6 +211,10 @@ function renderReconciliation(report) {
       <span class="label">Ledger</span>
       <strong>${esc(counts.paymentIntents ?? 0)} payments / ${esc(counts.escrowEvents ?? 0)} escrow</strong>
     </div>
+    <div>
+      <span class="label">Watcher</span>
+      <strong>${esc(counts.escrowWatcherEvents ?? 0)} contract events</strong>
+    </div>
   `;
   const findings = reconciliation?.findings ?? [];
   $('reconciliation-stream').innerHTML = findings.length ? findings.slice(0, 8).map((finding) => `

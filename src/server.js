@@ -13,6 +13,7 @@ import {
   escrowTradeIdHash,
   verifyEscrowContractEvent
 } from './escrow-contract.js';
+import { getEscrowWatcherStatus, runEscrowWatcher } from './escrow-watcher.js';
 import { verifyOnchainUsdcTransfer } from './onchain.js';
 import {
   buildX402PaymentRequirements,
@@ -967,6 +968,15 @@ function validateSandboxWebhookInput(input) {
   return errors;
 }
 
+function parseOptionalBlockNumber(value, name) {
+  if (value === undefined || value === null || value === '') return { value: null };
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return { error: `${name} must be a non-negative integer` };
+  }
+  return { value: parsed };
+}
+
 function queryValue(query, name) {
   if (typeof query?.get === 'function') return query.get(name);
   return query?.[name] ?? null;
@@ -1538,6 +1548,37 @@ export async function handleApiRequest(
         reconciliation: await buildReconciliationReport(store, { stuckAfterMinutes: parsedStuckAfter })
       }
     };
+  }
+
+  if (method === 'GET' && pathname === '/v1/admin/escrow-watcher/status') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    return {
+      status: 200,
+      body: {
+        watcher: await getEscrowWatcherStatus({ config: getConfig() })
+      }
+    };
+  }
+
+  if (method === 'POST' && pathname === '/v1/admin/escrow-watcher/run') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const fromBlock = parseOptionalBlockNumber(body.fromBlock, 'fromBlock');
+    const toBlock = parseOptionalBlockNumber(body.toBlock, 'toBlock');
+    const lookbackBlocks = parseOptionalBlockNumber(body.lookbackBlocks, 'lookbackBlocks');
+    const errors = [fromBlock.error, toBlock.error, lookbackBlocks.error].filter(Boolean);
+    if (errors.length > 0) return { status: 400, body: { error: 'invalid_escrow_watcher_range', errors } };
+
+    const result = await runEscrowWatcher({
+      store,
+      config: getConfig(),
+      fromBlock: fromBlock.value,
+      toBlock: toBlock.value,
+      lookbackBlocks: lookbackBlocks.value ?? 500
+    });
+    if (result.error) return result.error;
+    return { status: 200, body: { watcherRun: result } };
   }
 
   const adminPaymentMatch = pathname.match(/^\/v1\/admin\/payments\/([^/]+)$/);

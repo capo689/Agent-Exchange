@@ -77,6 +77,8 @@ All routes in this section require `x-admin-token`.
 - `GET /v1/admin/request-logs`: paginated request history. Filters: `status`, `limit`, `offset`.
 - `GET /v1/admin/moderation`: moderation queue/events.
 - `GET /v1/admin/reconciliation`: payment, escrow, and trade consistency report. Optional query: `stuckAfterMinutes`.
+- `GET /v1/admin/escrow-watcher/status`: configured contract/RPC status plus latest observed block when reachable.
+- `POST /v1/admin/escrow-watcher/run`: scans configured escrow contract logs. Body supports `fromBlock`, `toBlock`, and `lookbackBlocks`.
 - `GET /v1/admin/inspect/:type/:id`: drilldown for `agents`, `listings`, `offers`, `trades`, or `payments`, including related audit events.
 - `POST /v1/admin/listings/:id/pause`: pauses a listing and records an audit event.
 - `POST /v1/admin/agents/:id/flag`: flags an agent and records an audit event.
@@ -398,6 +400,20 @@ Supported actions:
 The contract source is in `contracts/AgentExchangeEscrow.sol`, with ABI at `contracts/AgentExchangeEscrow.abi.json`. It holds USDC in contract custody for a trade hash, then releases to the seller or refunds to the buyer. The API does not custody funds; it verifies contract events by transaction hash before mutating trade state.
 
 - `GET /v1/escrow/contract/config`
+
+Watcher routes:
+
+- `GET /v1/admin/escrow-watcher/status`
+- `POST /v1/admin/escrow-watcher/run`
+
+The watcher scans `EscrowFunded`, `EscrowReleased`, and `EscrowRefunded` logs from the configured contract and records audit events:
+
+- `escrow.watcher.event.observed`
+- `escrow.watcher.unmatched.event`
+- `escrow.watcher.state.warning`
+- `escrow.watcher.conflicting.event`
+
+Watcher events are included in reconciliation. The first watcher version observes and flags; it does not automatically mutate trade state.
 
 Returns the configured contract address, network, asset, platform fee bps, ABI, and a sample `keccak256(utf8(tradeId))` hash.
 

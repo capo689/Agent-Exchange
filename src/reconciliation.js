@@ -11,11 +11,14 @@ function addFinding(findings, { severity = 'warn', code, resourceType, resourceI
 }
 
 export async function buildReconciliationReport(store, { now = new Date(), stuckAfterMinutes = 30 } = {}) {
-  const [paymentIntents, paymentEvents, escrowEvents, trades] = await Promise.all([
+  const [paymentIntents, paymentEvents, escrowEvents, trades, watcherEvents] = await Promise.all([
     store.listPaymentIntents({ limit: 10000, offset: 0 }),
     store.listPaymentEvents({ limit: 10000, offset: 0 }),
     store.listEscrowEvents(),
-    store.listTrades({ limit: 10000, offset: 0 })
+    store.listTrades({ limit: 10000, offset: 0 }),
+    typeof store.listAuditEvents === 'function'
+      ? store.listAuditEvents({ limit: 10000, offset: 0 })
+      : []
   ]);
 
   const tradesById = new Map(trades.map((trade) => [trade.id, trade]));
@@ -144,6 +147,29 @@ export async function buildReconciliationReport(store, { now = new Date(), stuck
     }
   }
 
+  for (const event of watcherEvents.filter((item) => String(item.type ?? '').startsWith('escrow.watcher.'))) {
+    if (event.type === 'escrow.watcher.conflicting.event') {
+      addFinding(findings, {
+        severity: 'error',
+        code: 'escrow_watcher_conflicting_event',
+        resourceType: event.resourceType,
+        resourceId: event.resourceId,
+        message: 'Escrow watcher observed an onchain event that conflicts with marketplace records.',
+        details: event.payload
+      });
+    }
+    if (event.type === 'escrow.watcher.unmatched.event' || event.type === 'escrow.watcher.state.warning') {
+      addFinding(findings, {
+        severity: 'warn',
+        code: event.type.replaceAll('.', '_'),
+        resourceType: event.resourceType,
+        resourceId: event.resourceId,
+        message: 'Escrow watcher observed an onchain event that needs operator review.',
+        details: event.payload
+      });
+    }
+  }
+
   return {
     generatedAt: now.toISOString(),
     ok: findings.filter((finding) => finding.severity === 'error').length === 0,
@@ -151,6 +177,7 @@ export async function buildReconciliationReport(store, { now = new Date(), stuck
       paymentIntents: paymentIntents.length,
       paymentEvents: paymentEvents.length,
       escrowEvents: escrowEvents.length,
+      escrowWatcherEvents: watcherEvents.filter((item) => String(item.type ?? '').startsWith('escrow.watcher.')).length,
       trades: trades.length,
       findings: findings.length,
       errors: findings.filter((finding) => finding.severity === 'error').length,
