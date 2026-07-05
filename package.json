@@ -10,6 +10,7 @@
     "smoke:deploy": "node scripts/smoke-deploy.js",
     "smoke:deploy:bot": "node scripts/smoke-deploy.js --bot",
     "test:visual:dashboard": "node scripts/visual-dashboard-check.mjs",
+    "x402:create-test-wallet": "node scripts/create-test-wallet.js",
     "x402:probe": "node scripts/x402-buyer-probe.js",
     "start": "node src/server.js",
     "test": "node --test test/*.test.js"
