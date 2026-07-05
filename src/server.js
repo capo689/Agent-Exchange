@@ -6,6 +6,7 @@ import { createRequestId, error as logError, info as logInfo, warn as logWarn } 
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
 import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
 import { createPostgresStore } from './postgres-store.js';
+import { createRateLimiter } from './rate-limit.js';
 import { createStore } from './store.js';
 import { canTransition, getTransition } from './trades.js';
 
@@ -14,12 +15,13 @@ const defaultStore = runtimeConfig.databaseUrl
   ? createPostgresStore({ connectionString: runtimeConfig.databaseUrl })
   : createStore(runtimeConfig.dataDir ? { filePath: `${runtimeConfig.dataDir}/agent-exchange.json` } : {});
 
-function json(res, status, payload) {
+function json(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'x-request-id': payload.requestId ?? '',
-    'content-length': Buffer.byteLength(body)
+    'content-length': Buffer.byteLength(body),
+    ...extraHeaders
   });
   res.end(body);
 }
@@ -862,12 +864,37 @@ export async function handleApiRequest(
   return { status: 404, body: { error: 'not_found' } };
 }
 
-export function createApp({ store = defaultStore } = {}) {
+export function createApp({
+  store = defaultStore,
+  rateLimiter = createRateLimiter(runtimeConfig.rateLimit)
+} = {}) {
   return http.createServer(async (req, res) => {
     const requestId = createRequestId();
     const startedAt = performance.now();
     try {
       const url = new URL(req.url, 'http://localhost');
+      const rateLimit = rateLimiter.check(req, url.pathname);
+      if (!rateLimit.allowed) {
+        logWarn('http.rate_limited', {
+          requestId,
+          method: req.method,
+          path: url.pathname,
+          bucket: rateLimit.bucket,
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+          latencyMs: Math.round((performance.now() - startedAt) * 100) / 100
+        });
+        return json(
+          res,
+          429,
+          {
+            error: 'rate_limited',
+            message: 'Too many requests. Retry after the number of seconds in the Retry-After header.',
+            requestId
+          },
+          rateLimit.headers
+        );
+      }
+
       const body = req.method === 'GET' ? {} : await readJson(req);
       const result = await handleApiRequest(
         {
@@ -886,7 +913,7 @@ export function createApp({ store = defaultStore } = {}) {
         status: result.status,
         latencyMs: Math.round((performance.now() - startedAt) * 100) / 100
       });
-      return json(res, result.status, result.body);
+      return json(res, result.status, result.body, rateLimit.headers);
     } catch (error) {
       const status = error.code === 'REQUEST_BODY_TOO_LARGE'
         ? 413

@@ -15,12 +15,19 @@ SUPABASE_PROJECT_REF=your-project-ref
 DATABASE_URL=postgresql://postgres.your-project-ref:YOUR_DB_PASSWORD@aws-1-us-west-2.pooler.supabase.com:6543/postgres
 LOG_LEVEL=info
 MAX_JSON_BODY_BYTES=1048576
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_READ_MAX_REQUESTS=300
+RATE_LIMIT_WRITE_MAX_REQUESTS=120
+RATE_LIMIT_AUTH_MAX_REQUESTS=30
 ADMIN_TOKEN=generate_a_long_random_admin_token
 ```
 
 `DATABASE_URL` should be the Supabase shared pooler string for hosted Render runtime. For the current `max` project, the verified host is `aws-1-us-west-2.pooler.supabase.com` and the working port is `6543`.
 
 If the database password contains URL-special characters, URL-encode it or use an alphanumeric temporary password while validating the deploy. Render must be redeployed after changing environment group values.
+
+Rate limits are enforced per client IP and route class before request bodies are parsed. The defaults allow normal bot flows while slowing abuse of registration, verification, and write endpoints.
 
 ## Attach Env Group To Web Service
 

@@ -64,6 +64,7 @@ Expected result: a seller and buyer bot register, verify, create a Tier 0 listin
 
 Expected behavior:
 
+- HTTP requests are rate-limited per client IP and route class before JSON bodies are parsed.
 - Listings require a registered seller agent.
 - Trades require a registered buyer agent.
 - Mutating agent routes require `Authorization: Bearer <session token>`.

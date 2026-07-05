@@ -1,5 +1,9 @@
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_JSON_BODY_BYTES = 1_048_576;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
+const DEFAULT_RATE_LIMIT_READ_MAX_REQUESTS = 300;
+const DEFAULT_RATE_LIMIT_WRITE_MAX_REQUESTS = 120;
+const DEFAULT_RATE_LIMIT_AUTH_MAX_REQUESTS = 30;
 
 function parsePositiveInteger(value, fallback) {
   const parsed = Number(value);
@@ -62,6 +66,13 @@ export function getConfig(env = process.env) {
     port: parsePositiveInteger(env.PORT, DEFAULT_PORT),
     dataDir,
     maxJsonBodyBytes: parsePositiveInteger(env.MAX_JSON_BODY_BYTES, DEFAULT_MAX_JSON_BODY_BYTES),
+    rateLimit: {
+      enabled: env.RATE_LIMIT_ENABLED !== 'false',
+      windowMs: parsePositiveInteger(env.RATE_LIMIT_WINDOW_MS, DEFAULT_RATE_LIMIT_WINDOW_MS),
+      readMaxRequests: parsePositiveInteger(env.RATE_LIMIT_READ_MAX_REQUESTS, DEFAULT_RATE_LIMIT_READ_MAX_REQUESTS),
+      writeMaxRequests: parsePositiveInteger(env.RATE_LIMIT_WRITE_MAX_REQUESTS, DEFAULT_RATE_LIMIT_WRITE_MAX_REQUESTS),
+      authMaxRequests: parsePositiveInteger(env.RATE_LIMIT_AUTH_MAX_REQUESTS, DEFAULT_RATE_LIMIT_AUTH_MAX_REQUESTS)
+    },
     databaseUrl,
     database: databaseConnectionInfo(databaseUrl),
     storageBackend: databaseUrl ? 'postgres' : dataDir ? 'json' : 'memory',
@@ -97,6 +108,7 @@ export function getSafeRuntimeStatus(env = process.env) {
         config.supabase.secretKey
     ),
     supabaseJwksConfigured: Boolean(config.supabase.jwksUrl),
-    maxJsonBodyBytes: config.maxJsonBodyBytes
+    maxJsonBodyBytes: config.maxJsonBodyBytes,
+    rateLimit: config.rateLimit
   };
 }

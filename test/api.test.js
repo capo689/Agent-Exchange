@@ -3,6 +3,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
+import { createRateLimiter } from '../src/rate-limit.js';
 import { createApp, handleApiRequest } from '../src/server.js';
 import { createStore } from '../src/store.js';
 
@@ -157,7 +158,14 @@ test('config accepts Render Supabase env group names without exposing secrets in
     adminConfigured: false,
     supabaseConfigured: true,
     supabaseJwksConfigured: true,
-    maxJsonBodyBytes: 1048576
+    maxJsonBodyBytes: 1048576,
+    rateLimit: {
+      enabled: true,
+      windowMs: 60000,
+      readMaxRequests: 300,
+      writeMaxRequests: 120,
+      authMaxRequests: 30
+    }
   });
   assert.equal(JSON.stringify(status).includes('secret'), false);
   assert.equal(JSON.stringify(status).includes('publishable'), false);
@@ -869,6 +877,56 @@ test('http server rejects oversized JSON bodies before buffering everything', as
 
   assert.equal(statusCode, 413);
   assert.equal(JSON.parse(payload).error, 'request_body_too_large');
+});
+
+test('http server rate limits repeated auth requests before route handling', async () => {
+  const server = createApp({
+    store: createStore(),
+    rateLimiter: createRateLimiter({
+      enabled: true,
+      windowMs: 60_000,
+      readMaxRequests: 100,
+      writeMaxRequests: 100,
+      authMaxRequests: 1
+    })
+  });
+
+  async function emitRegisterRequest() {
+    const req = Readable.from([Buffer.from('{"developerId":"dev_rate","name":"Rate Bot"}')]);
+    req.method = 'POST';
+    req.url = '/v1/agents/register';
+    req.headers = { 'x-forwarded-for': '203.0.113.10' };
+
+    let statusCode = null;
+    let headers = {};
+    let payload = '';
+    const res = new Writable({
+      write(chunk, _encoding, callback) {
+        payload += chunk.toString();
+        callback();
+      }
+    });
+    res.writeHead = (status, writtenHeaders = {}) => {
+      statusCode = status;
+      headers = writtenHeaders;
+    };
+
+    await new Promise((resolve) => {
+      res.on('finish', resolve);
+      server.emit('request', req, res);
+    });
+
+    return { statusCode, headers, body: JSON.parse(payload) };
+  }
+
+  const first = await emitRegisterRequest();
+  const second = await emitRegisterRequest();
+
+  assert.equal(first.statusCode, 201);
+  assert.equal(second.statusCode, 429);
+  assert.equal(second.body.error, 'rate_limited');
+  assert.equal(second.headers['x-ratelimit-limit'], '1');
+  assert.equal(second.headers['retry-after'], '60');
 });
 
 test('cleanup maintenance is admin-only and removes used challenges', async () => {
