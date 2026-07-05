@@ -1185,31 +1185,32 @@ export async function handleApiRequest(
         input: { ...body, actorAgentId: actor }
       },
       async () => {
-        const escrowEvent = transition.escrowType
-          ? await store.createEscrowEvent({
-              tradeId,
-              type: transition.escrowType,
-              amountUsdc: trade.priceUsdc,
-              actor,
-              payload: {
-                note: 'Stub escrow adapter; replace with Commerce Payments integration.'
-              }
-            })
-          : null;
-
-        const updatedTrade = await store.transitionTrade(tradeId, {
+        const transitionResult = await store.transitionTrade(tradeId, {
+          ...transition,
           to: transition.to,
           eventType: transition.eventType,
           actor,
+          escrowAmountUsdc: trade.priceUsdc,
+          escrowPayload: {
+            note: 'Stub escrow adapter; replace with Commerce Payments integration.'
+          },
           payload: {
             proof: body.proof ?? null,
             reason: body.reason ?? null,
-            resolution: body.resolution ?? null,
-            escrowEventId: escrowEvent?.id ?? null
+            resolution: body.resolution ?? null
           }
         });
 
-        return { status: 200, body: { trade: updatedTrade, escrowEvent } };
+        if (transitionResult?.error) return transitionResult.error;
+        if (!transitionResult) return { status: 404, body: { error: 'trade_not_found' } };
+
+        return {
+          status: 200,
+          body: {
+            trade: transitionResult.trade,
+            escrowEvent: transitionResult.escrowEvent
+          }
+        };
       }
     );
   }

@@ -6,6 +6,7 @@ import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
 import { createRateLimiter } from '../src/rate-limit.js';
 import { createApp, handleApiRequest } from '../src/server.js';
 import { createStore } from '../src/store.js';
+import { getTransition } from '../src/trades.js';
 
 process.env.ADMIN_TOKEN ??= 'test-admin-token';
 
@@ -22,6 +23,7 @@ function createClient() {
   }
 
   return {
+    store,
     authHeadersByAgentId,
     get(pathname, query = {}) {
       return handleApiRequest({ method: 'GET', pathname, query }, store);
@@ -361,6 +363,45 @@ test('trade creation is idempotent and rejects key reuse with a different body',
   assert.equal(reused.body.error, 'idempotency_key_reuse');
 });
 
+test('idempotency serializes duplicate in-flight requests', async () => {
+  const store = createStore();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let runs = 0;
+  const input = { agentId: 'agt_race', amount: '1.00' };
+
+  const first = store.withIdempotency(
+    { scope: 'race', key: 'same-key', input },
+    async () => {
+      runs += 1;
+      await gate;
+      return { status: 201, body: { runs } };
+    }
+  );
+  await Promise.resolve();
+  const second = store.withIdempotency(
+    { scope: 'race', key: 'same-key', input },
+    async () => {
+      runs += 1;
+      return { status: 201, body: { runs } };
+    }
+  );
+  const reusedDifferentBody = await store.withIdempotency(
+    { scope: 'race', key: 'same-key', input: { ...input, amount: '2.00' } },
+    async () => ({ status: 201, body: { shouldNotRun: true } })
+  );
+
+  release();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.equal(runs, 1);
+  assert.deepEqual(secondResult, firstResult);
+  assert.equal(reusedDifferentBody.status, 409);
+  assert.equal(reusedDifferentBody.body.error, 'idempotency_key_reuse');
+});
+
 test('self trading is blocked', async () => {
   const client = createClient();
   const seller = await registerBasicAgent(client, 'self_trade_agent');
@@ -428,6 +469,54 @@ test('trade transitions create escrow events and reject invalid state jumps', as
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.body.trade.state, 'CAPTURED');
   assert.equal(confirmed.body.escrowEvent.type, 'CAPTURE_STUB');
+});
+
+test('stale trade transition recheck prevents split escrow writes', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const created = await client.post('/v1/listings', {
+    sellerAgentId: seller.id,
+    title: 'Transition race listing',
+    description: 'State recheck should guard escrow writes.',
+    category: 'digital_good',
+    assuranceTier: 0,
+    priceUsdc: '11.00'
+  });
+  const offered = await client.post('/v1/trades', {
+    listingId: created.body.listing.id,
+    buyerAgentId: buyer.id,
+    assuranceAcknowledgement: true
+  });
+  await client.post(`/v1/trades/${offered.body.trade.id}/accept`, {
+    actorAgentId: seller.id
+  });
+  await client.post(`/v1/trades/${offered.body.trade.id}/deliver`, {
+    actorAgentId: seller.id
+  });
+
+  const tradeBeforeRace = (await client.get(`/v1/trades/${offered.body.trade.id}`)).body.trade;
+  const confirm = getTransition('confirm');
+  const refund = getTransition('refund');
+  const confirmed = client.store.transitionTrade(tradeBeforeRace.id, {
+    ...confirm,
+    actor: buyer.id,
+    escrowAmountUsdc: tradeBeforeRace.priceUsdc,
+    escrowPayload: {},
+    payload: {}
+  });
+  const staleRefund = client.store.transitionTrade(tradeBeforeRace.id, {
+    ...refund,
+    actor: seller.id,
+    escrowAmountUsdc: tradeBeforeRace.priceUsdc,
+    escrowPayload: {},
+    payload: {}
+  });
+  const escrowEvents = await client.store.listEscrowEvents({ tradeId: tradeBeforeRace.id });
+
+  assert.equal(confirmed.trade.state, 'CAPTURED');
+  assert.equal(confirmed.escrowEvent.type, 'CAPTURE_STUB');
+  assert.equal(staleRefund.error.status, 409);
+  assert.equal(escrowEvents.some((event) => event.type === 'REFUND_STUB'), false);
 });
 
 test('trade actions enforce buyer seller roles', async () => {

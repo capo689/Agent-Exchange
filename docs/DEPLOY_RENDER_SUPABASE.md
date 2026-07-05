@@ -25,6 +25,8 @@ ADMIN_TOKEN=generate_a_long_random_admin_token
 
 `DATABASE_URL` should be the Supabase shared pooler string for hosted Render runtime. For the current `max` project, the verified host is `aws-1-us-west-2.pooler.supabase.com` and the working port is `6543`.
 
+The API pins Supabase database TLS to the bundled [Supabase Root 2021 CA](../certs/supabase-prod-ca-2021.crt). If Supabase rotates certificates, override the bundle by setting `DATABASE_CA_CERT` to the new root certificate as one env value with newline escapes (`\n`) between PEM lines, or set `DATABASE_CA_CERT_PATH` to a mounted certificate file.
+
 If the database password contains URL-special characters, URL-encode it or use an alphanumeric temporary password while validating the deploy. Render must be redeployed after changing environment group values.
 
 Rate limits are enforced per client IP and route class before request bodies are parsed. The defaults allow normal bot flows while slowing abuse of registration, verification, and write endpoints.

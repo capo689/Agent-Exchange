@@ -115,6 +115,7 @@ export function createStore({ filePath } = {}) {
   const reputationEvents = mapById(state.reputationEvents ?? []);
   const requestLogs = mapById(state.requestLogs ?? []);
   const auditEvents = mapById(state.auditEvents ?? []);
+  const idempotencyInFlight = new Map();
   const idempotencyRecords = new Map(
     (state.idempotencyRecords ?? []).map((record) => [record.key, record])
   );
@@ -773,9 +774,31 @@ export function createStore({ filePath } = {}) {
         return clone(existing.response);
       }
 
-      const response = await fn();
-      this.saveIdempotencyRecord(recordKey, fingerprint, clone(response));
-      return response;
+      const pending = idempotencyInFlight.get(recordKey);
+      if (pending) {
+        if (pending.fingerprint !== fingerprint) {
+          return {
+            status: 409,
+            body: {
+              error: 'idempotency_key_reuse',
+              message: 'This Idempotency-Key is already in flight with a different request body.'
+            }
+          };
+        }
+        return clone(await pending.promise);
+      }
+
+      const promise = (async () => {
+        const response = await fn();
+        this.saveIdempotencyRecord(recordKey, fingerprint, clone(response));
+        return response;
+      })();
+      idempotencyInFlight.set(recordKey, { fingerprint, promise });
+      try {
+        return await promise;
+      } finally {
+        idempotencyInFlight.delete(recordKey);
+      }
     },
 
     createTrade(input, listing) {
@@ -1093,15 +1116,58 @@ export function createStore({ filePath } = {}) {
     transitionTrade(tradeId, transition) {
       const trade = trades.get(tradeId);
       if (!trade) return null;
+      if (!transition.from.includes(trade.state)) {
+        return {
+          error: {
+            status: 409,
+            body: {
+              error: 'invalid_trade_transition',
+              state: trade.state,
+              allowedFrom: transition.from
+            }
+          }
+        };
+      }
 
       const before = trade.state;
+      const escrowEvent = transition.escrowType
+        ? {
+            id: `esc_${randomUUID()}`,
+            tradeId,
+            type: transition.escrowType,
+            amountUsdc: transition.escrowAmountUsdc ?? trade.priceUsdc,
+            actor: transition.actor,
+            adapter: 'stub',
+            payload: transition.escrowPayload ?? {},
+            createdAt: nowIso()
+          }
+        : null;
+      if (escrowEvent) {
+        escrowEvents.set(escrowEvent.id, escrowEvent);
+        recordAuditEvent({
+          type: 'escrow.event_created',
+          severity: 'info',
+          actorAgentId: transition.actor === 'admin' ? null : transition.actor,
+          resourceType: 'trade',
+          resourceId: tradeId,
+          payload: {
+            escrowEventId: escrowEvent.id,
+            escrowType: escrowEvent.type,
+            amountUsdc: escrowEvent.amountUsdc,
+            adapter: escrowEvent.adapter
+          }
+        });
+      }
       trade.state = transition.to;
       addTradeEvent(trade, {
         type: transition.eventType,
         actor: transition.actor,
         from: before,
         to: transition.to,
-        payload: transition.payload ?? {}
+        payload: {
+          ...(transition.payload ?? {}),
+          escrowEventId: escrowEvent?.id ?? transition.payload?.escrowEventId ?? null
+        }
       });
 
       for (const impact of reputationImpacts({ transition, trade })) {
@@ -1156,37 +1222,7 @@ export function createStore({ filePath } = {}) {
         }
       });
       persist();
-      return trade;
-    },
-
-    createEscrowEvent({ tradeId, type, amountUsdc, actor, payload = {} }) {
-      const event = {
-        id: `esc_${randomUUID()}`,
-        tradeId,
-        type,
-        amountUsdc,
-        actor,
-        adapter: 'stub',
-        payload,
-        createdAt: nowIso()
-      };
-
-      escrowEvents.set(event.id, event);
-      recordAuditEvent({
-        type: 'escrow.event_created',
-        severity: 'info',
-        actorAgentId: actor === 'admin' ? null : actor,
-        resourceType: 'trade',
-        resourceId: tradeId,
-        payload: {
-          escrowEventId: event.id,
-          escrowType: type,
-          amountUsdc,
-          adapter: event.adapter
-        }
-      });
-      persist();
-      return event;
+      return { trade, escrowEvent };
     },
 
     listEscrowEvents() {

@@ -1,9 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { addUsdc, compareUsdc, multiplyUnitPrice, subtractUsdc } from './money.js';
 import { isOfferOpen, offerStatuses, ruleMatchesOffer } from './negotiation.js';
 
 const { Pool } = pg;
+const bundledSupabaseCaUrl = new URL('../certs/supabase-prod-ca-2021.crt', import.meta.url);
 
 function nowIso() {
   return new Date().toISOString();
@@ -33,9 +35,33 @@ function iso(value) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+function normalizePem(value) {
+  return value?.replaceAll('\\n', '\n').trim();
+}
+
+function bundledSupabaseCaCertificate() {
+  return normalizePem(readFileSync(bundledSupabaseCaUrl, 'utf8'));
+}
+
+function databaseCaCertificate({ useBundledSupabaseCa = false } = {}) {
+  const inline = normalizePem(process.env.DATABASE_CA_CERT ?? process.env.SUPABASE_DB_CA_CERT ?? '');
+  if (inline) return inline;
+
+  const caPath = process.env.DATABASE_CA_CERT_PATH ?? process.env.SUPABASE_DB_CA_CERT_PATH ?? '';
+  if (caPath) return normalizePem(readFileSync(caPath, 'utf8'));
+
+  return useBundledSupabaseCa ? bundledSupabaseCaCertificate() : null;
+}
+
 function makePool(connectionString) {
-  const ssl = connectionString.includes('supabase.com') || connectionString.includes('sslmode=require')
-    ? { rejectUnauthorized: false }
+  const isSupabase = connectionString.includes('supabase.com');
+  const requiresSsl = isSupabase || connectionString.includes('sslmode=require');
+  const ca = requiresSsl ? databaseCaCertificate({ useBundledSupabaseCa: isSupabase }) : null;
+  const ssl = requiresSsl
+    ? {
+        rejectUnauthorized: true,
+        ...(ca ? { ca } : {})
+      }
     : undefined;
   return new Pool({ connectionString, ssl });
 }
@@ -956,9 +982,38 @@ export function createPostgresStore({ connectionString }) {
 
       const recordKey = `${scope}:${key}`;
       const fingerprint = digest(input);
-      const existing = await query('select * from idempotency_records where key = $1', [recordKey]);
-      if (existing.rows[0]) {
-        if (existing.rows[0].fingerprint !== fingerprint) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [recordKey]);
+        const existing = await client.query('select * from idempotency_records where key = $1', [recordKey]);
+        if (existing.rows[0]) {
+          await client.query('commit');
+          if (existing.rows[0].fingerprint !== fingerprint) {
+            return {
+              status: 409,
+              body: {
+                error: 'idempotency_key_reuse',
+                message: 'This Idempotency-Key was already used with a different request body.'
+              }
+            };
+          }
+          return clone(existing.rows[0].response);
+        }
+
+        const response = await fn();
+        await client.query(
+          `insert into idempotency_records (key, fingerprint, response)
+           values ($1, $2, $3::jsonb)`,
+          [recordKey, fingerprint, jsonb(clone(response))]
+        );
+        await client.query('commit');
+        return response;
+      } catch (error) {
+        await client.query('rollback');
+        if (error.code === '23505') {
+          const existing = await query('select * from idempotency_records where key = $1', [recordKey]);
+          if (existing.rows[0]?.fingerprint === fingerprint) return clone(existing.rows[0].response);
           return {
             status: 409,
             body: {
@@ -967,12 +1022,10 @@ export function createPostgresStore({ connectionString }) {
             }
           };
         }
-        return clone(existing.rows[0].response);
+        throw error;
+      } finally {
+        client.release();
       }
-
-      const response = await fn();
-      await this.saveIdempotencyRecord(recordKey, fingerprint, clone(response));
-      return response;
     },
 
     async createTrade(input, listing) {
@@ -1373,6 +1426,51 @@ export function createPostgresStore({ connectionString }) {
           await client.query('rollback');
           return null;
         }
+        if (!transition.from.includes(trade.state)) {
+          await client.query('rollback');
+          return {
+            error: {
+              status: 409,
+              body: {
+                error: 'invalid_trade_transition',
+                state: trade.state,
+                allowedFrom: transition.from
+              }
+            }
+          };
+        }
+
+        let escrowEvent = null;
+        if (transition.escrowType) {
+          const escrowResult = await client.query(
+            `insert into escrow_events (id, trade_id, type, amount_usdc, actor, adapter, payload)
+             values ($1, $2, $3, $4, $5, $6, $7::jsonb)
+             returning *`,
+            [
+              `esc_${randomUUID()}`,
+              tradeId,
+              transition.escrowType,
+              transition.escrowAmountUsdc ?? trade.priceUsdc,
+              transition.actor,
+              'stub',
+              jsonb(transition.escrowPayload ?? {})
+            ]
+          );
+          escrowEvent = escrowEventFromRow(escrowResult.rows[0]);
+          await insertAuditEvent({
+            type: 'escrow.event_created',
+            severity: 'info',
+            actorAgentId: eventActor(transition.actor),
+            resourceType: 'trade',
+            resourceId: tradeId,
+            payload: {
+              escrowEventId: escrowEvent.id,
+              escrowType: escrowEvent.type,
+              amountUsdc: escrowEvent.amountUsdc,
+              adapter: escrowEvent.adapter
+            }
+          }, client);
+        }
 
         const event = {
           at: nowIso(),
@@ -1380,7 +1478,10 @@ export function createPostgresStore({ connectionString }) {
           actor: transition.actor,
           from: trade.state,
           to: transition.to,
-          payload: transition.payload ?? {}
+          payload: {
+            ...(transition.payload ?? {}),
+            escrowEventId: escrowEvent?.id ?? transition.payload?.escrowEventId ?? null
+          }
         };
         const events = [...trade.events, event];
         const updatedTradeResult = await client.query(
@@ -1455,37 +1556,13 @@ export function createPostgresStore({ connectionString }) {
         }, client);
 
         await client.query('commit');
-        return updatedTrade;
+        return { trade: updatedTrade, escrowEvent };
       } catch (error) {
         await client.query('rollback');
         throw error;
       } finally {
         client.release();
       }
-    },
-
-    async createEscrowEvent({ tradeId, type, amountUsdc, actor, payload = {} }) {
-      const { rows } = await query(
-        `insert into escrow_events (id, trade_id, type, amount_usdc, actor, adapter, payload)
-         values ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         returning *`,
-        [`esc_${randomUUID()}`, tradeId, type, amountUsdc, actor, 'stub', jsonb(payload)]
-      );
-      const event = escrowEventFromRow(rows[0]);
-      await insertAuditEvent({
-        type: 'escrow.event_created',
-        severity: 'info',
-        actorAgentId: eventActor(actor),
-        resourceType: 'trade',
-        resourceId: tradeId,
-        payload: {
-          escrowEventId: event.id,
-          escrowType: type,
-          amountUsdc,
-          adapter: event.adapter
-        }
-      });
-      return event;
     },
 
     async listEscrowEvents() {
