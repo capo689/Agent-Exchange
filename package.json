@@ -9,6 +9,7 @@
     "mcp": "node mcp/server.js",
     "smoke:deploy": "node scripts/smoke-deploy.js",
     "smoke:deploy:bot": "node scripts/smoke-deploy.js --bot",
+    "test:visual:dashboard": "node scripts/visual-dashboard-check.mjs",
     "start": "node src/server.js",
     "test": "node --test"
   },
@@ -17,5 +18,8 @@
   },
   "dependencies": {
     "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.57.0"
   }
 }

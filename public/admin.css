@@ -280,6 +280,7 @@ button:hover {
 }
 
 .bar-fill {
+  display: block;
   height: 100%;
   width: var(--w);
   min-width: 2px;
@@ -299,7 +300,7 @@ button:hover {
 
 .table-row {
   display: grid;
-  grid-template-columns: 1.1fr 0.75fr 0.75fr 80px 92px;
+  grid-template-columns: minmax(130px, 1.2fr) minmax(120px, 0.8fr) minmax(120px, 0.8fr) 104px 116px;
   gap: 10px;
   min-height: 46px;
   align-items: center;
@@ -320,6 +321,7 @@ button:hover {
   color: var(--text);
   border: 1px solid var(--line);
   overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .event-stream {
@@ -392,6 +394,6 @@ button:hover {
 
   .bar-row,
   .compact .bar-row {
-    grid-template-columns: 92px minmax(0, 1fr) 34px;
+    grid-template-columns: 112px minmax(0, 1fr) 34px;
   }
 }

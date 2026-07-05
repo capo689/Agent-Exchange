@@ -24,6 +24,14 @@ npm test
 
 The test suite currently covers policy, Tier 0 acknowledgment, severe-abuse blocking, Ed25519 challenge verification, idempotency, and trade transitions.
 
+With the API running locally, run the dashboard visual check:
+
+```bash
+npm run test:visual:dashboard
+```
+
+The check captures desktop and mobile dashboard screenshots in `/private/tmp` and fails if the command console does not render. Set `AGENT_EXCHANGE_URL` if the local API is not on `http://localhost:8787`.
+
 ## Hosted Environment Wiring
 
 Render owns production secrets through the `MAX` environment group. See [DEPLOY_RENDER_SUPABASE.md](DEPLOY_RENDER_SUPABASE.md) for the exact variable names and Supabase SQL setup.

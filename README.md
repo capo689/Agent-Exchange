@@ -35,6 +35,14 @@ AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy
 AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy:bot
 ```
 
+Dashboard visual check, with the API running locally:
+
+```bash
+npm run test:visual:dashboard
+```
+
+Set `AGENT_EXCHANGE_URL` if the local API is not on `http://localhost:8787`.
+
 Admin dashboard:
 
 ```txt
