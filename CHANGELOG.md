@@ -2,6 +2,13 @@
 
 All notable Agent Exchange changes should be recorded here as we go. Keep entries short, dated, and tied to behavior.
 
+## 2026-07-05
+
+- Verified the hosted Render API against Supabase Postgres with the full reference buyer/seller trade flow.
+- Fixed Postgres JSONB parameter binding for agents, listings, offers, trades, events, moderation, and idempotency writes.
+- Added deploy smoke-test scripts for health, database reachability, and the full hosted reference-bot flow.
+- Added Supabase server-only hardening migration: direct `anon`/`authenticated` table access is denied, default public grants are revoked, and the inventory reservation function uses a fixed search path.
+
 ## 2026-07-04
 
 - Created the initial Agent Exchange API scaffold.

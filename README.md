@@ -28,6 +28,13 @@ Reference bot flow, with the API running:
 npm run bots:reference
 ```
 
+Hosted smoke check:
+
+```bash
+AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy
+AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy:bot
+```
+
 MCP-style stdio tool server:
 
 ```bash
@@ -78,4 +85,5 @@ See [docs/API.md](docs/API.md) and [docs/POLICY.md](docs/POLICY.md).
 - Negotiation v1: [docs/NEGOTIATION_V1.md](docs/NEGOTIATION_V1.md)
 - Runbook: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 - Render + Supabase setup: [docs/DEPLOY_RENDER_SUPABASE.md](docs/DEPLOY_RENDER_SUPABASE.md)
+- Database migrations: [db/migrations](db/migrations)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)

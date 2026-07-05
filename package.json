@@ -7,6 +7,8 @@
   "scripts": {
     "bots:reference": "node examples/reference-bots.js",
     "mcp": "node mcp/server.js",
+    "smoke:deploy": "node scripts/smoke-deploy.js",
+    "smoke:deploy:bot": "node scripts/smoke-deploy.js --bot",
     "start": "node src/server.js",
     "test": "node --test"
   },

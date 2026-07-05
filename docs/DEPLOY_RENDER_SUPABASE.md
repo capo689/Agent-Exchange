@@ -12,13 +12,15 @@ SUPABASE_PUBLISHABLE_KEY=your_publishable_key
 SUPABASE_SECRET_KEY=your_secret_key
 SUPABASE_JWKS_URL=https://your-project-ref.supabase.co/auth/v1/.well-known/jwks.json
 SUPABASE_PROJECT_REF=your-project-ref
-DATABASE_URL=postgresql://postgres.your-project-ref:YOUR_DB_PASSWORD@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+DATABASE_URL=postgresql://postgres.your-project-ref:YOUR_DB_PASSWORD@aws-1-us-west-2.pooler.supabase.com:6543/postgres
 LOG_LEVEL=info
 MAX_JSON_BODY_BYTES=1048576
 ADMIN_TOKEN=generate_a_long_random_admin_token
 ```
 
-`DATABASE_URL` should be the Supabase transaction pooler string for hosted Render runtime. It normally uses port `6543`.
+`DATABASE_URL` should be the Supabase shared pooler string for hosted Render runtime. For the current `max` project, the verified host is `aws-1-us-west-2.pooler.supabase.com` and the working port is `6543`.
+
+If the database password contains URL-special characters, URL-encode it or use an alphanumeric temporary password while validating the deploy. Render must be redeployed after changing environment group values.
 
 ## Attach Env Group To Web Service
 
@@ -42,6 +44,8 @@ Before the API uses Postgres persistence, run [db/schema.sql](../db/schema.sql) 
 
 This creates the first launch tables and the `reserve_listing_inventory` function. That function locks the listing row while reserving inventory, which is the production fix for concurrent partial fills and oversell prevention.
 
+Subsequent database changes live in [db/migrations](../db/migrations). The first hardening migration makes direct Supabase Data API access server-only by denying `anon`/`authenticated` table policies, revoking direct table/function grants, and setting a fixed search path on the inventory reservation function.
+
 When `DATABASE_URL` is present, the API starts with the Postgres store adapter. Without `DATABASE_URL`, local development uses memory or the optional JSON file store.
 
 ## Verify Wiring
@@ -49,7 +53,7 @@ When `DATABASE_URL` is present, the API starts with the Postgres store adapter. 
 After deploy, check:
 
 ```bash
-curl -sS https://YOUR_RENDER_SERVICE.onrender.com/v1/health
+AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run smoke:deploy
 ```
 
 The `runtime` object should report:
@@ -68,5 +72,5 @@ The `runtime` object should report:
 After the schema is installed and Render is redeployed, run the reference bot against the Render URL to confirm the hosted Postgres flow:
 
 ```bash
-AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run bots:reference
+AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run smoke:deploy:bot
 ```

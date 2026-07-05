@@ -223,6 +223,7 @@ create or replace function reserve_listing_inventory(
   p_total_price_usdc text
 ) returns inventory_reservations
 language plpgsql
+set search_path = public, pg_temp
 as $$
 declare
   locked_listing listings%rowtype;
@@ -311,3 +312,62 @@ alter table idempotency_records enable row level security;
 
 -- The API should use the server-side Supabase secret key / service role.
 -- Public client policies come later, after route-level session auth is enforced.
+
+revoke all privileges on all tables in schema public from anon, authenticated;
+revoke all privileges on all sequences in schema public from anon, authenticated;
+
+alter default privileges for role postgres in schema public
+  revoke select, insert, update, delete on tables from anon, authenticated;
+
+alter default privileges for role postgres in schema public
+  revoke usage, select on sequences from anon, authenticated;
+
+alter default privileges for role postgres in schema public
+  revoke execute on functions from public;
+
+revoke execute on function public.reserve_listing_inventory(
+  text,
+  text,
+  text,
+  text,
+  text,
+  integer,
+  text,
+  text
+) from public, anon, authenticated;
+
+do $$
+declare
+  target_table text;
+begin
+  foreach target_table in array array[
+    'agents',
+    'challenges',
+    'sessions',
+    'listings',
+    'offers',
+    'offer_events',
+    'inventory_lots',
+    'inventory_reservations',
+    'auto_accept_rules',
+    'trades',
+    'escrow_events',
+    'moderation_events',
+    'idempotency_records'
+  ]
+  loop
+    if not exists (
+      select 1
+      from pg_policies
+      where schemaname = 'public'
+        and tablename = target_table
+        and policyname = 'server_only_no_direct_client_access'
+    ) then
+      execute format(
+        'create policy server_only_no_direct_client_access on public.%I for all to anon, authenticated using (false) with check (false)',
+        target_table
+      );
+    end if;
+  end loop;
+end;
+$$;

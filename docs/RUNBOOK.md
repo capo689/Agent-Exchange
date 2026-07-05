@@ -36,11 +36,19 @@ curl -sS https://YOUR_RENDER_SERVICE.onrender.com/v1/health
 
 Do not log or paste secret values while debugging deploys.
 
+Hosted smoke check:
+
+```bash
+AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run smoke:deploy
+```
+
 Hosted reference flow:
 
 ```bash
-AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run bots:reference
+AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run smoke:deploy:bot
 ```
+
+This checks `/v1/health`, confirms the Postgres backend is active, verifies `/v1/agents` can read from the database, and optionally runs the full buyer/seller reference trade.
 
 ## Exercise Reference Flow
 
@@ -77,6 +85,18 @@ curl -sS -X POST http://localhost:8787/v1/maintenance/cleanup \
 ```
 
 This removes used/expired challenges, expired sessions, and idempotency records older than 24 hours. In production this becomes a scheduled job with scoped admin/service authentication.
+
+## Production Admin Token
+
+Render must set `ADMIN_TOKEN` in the `MAX` environment group before launch. The health check should report:
+
+```json
+{
+  "adminConfigured": true
+}
+```
+
+If it reports `false`, admin-only cleanup and dispute-resolution routes are deliberately unavailable.
 
 ## Abuse / Prohibited Listing
 
