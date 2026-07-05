@@ -7,11 +7,13 @@ import { getConfig, getSafeRuntimeStatus } from './config.js';
 import { verifyEd25519Signature } from './crypto.js';
 import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
+import { verifyOnchainUsdcTransfer } from './onchain.js';
 import {
   buildX402PaymentRequirements,
   paymentStatuses,
   parseX402PaymentPayload,
   settleX402Payment,
+  usdcToAtomicAmount,
   verifySandboxWebhookSignature
 } from './payments.js';
 import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
@@ -511,6 +513,41 @@ function x402RequirementsForAmount(amountUsdc) {
   }
 }
 
+function manualUsdcInstructionsForAmount(amountUsdc) {
+  const x402 = getConfig().payment.x402;
+  if (!x402.payTo || !x402.asset || !x402.network) {
+    return {
+      error: {
+        status: 503,
+        body: {
+          error: 'manual_usdc_not_configured',
+          message: 'X402_PAY_TO, X402_NETWORK, and X402_ASSET must be configured before manual USDC payments can run.'
+        }
+      }
+    };
+  }
+
+  try {
+    return {
+      network: x402.network,
+      asset: x402.asset,
+      payTo: x402.payTo,
+      amountUsdc,
+      amount: usdcToAtomicAmount(amountUsdc)
+    };
+  } catch (error) {
+    return {
+      error: {
+        status: 400,
+        body: {
+          error: 'invalid_manual_usdc_amount',
+          message: error.message
+        }
+      }
+    };
+  }
+}
+
 function x402ResourceUrl(pathname) {
   const baseUrl = (
     process.env.AGENT_EXCHANGE_PUBLIC_URL ??
@@ -864,6 +901,77 @@ export async function handleApiRequest(
       body: {
         provider: 'x402',
         paymentRequirements: result.paymentRequirements
+      }
+    };
+  }
+
+  if (method === 'GET' && pathname === '/v1/payments/manual-usdc/instructions') {
+    const amountUsdc = queryValue(query, 'amountUsdc') ?? '0.01';
+    const instructions = manualUsdcInstructionsForAmount(amountUsdc);
+    if (instructions.error) return instructions.error;
+    return {
+      status: 200,
+      body: {
+        provider: 'manual_usdc',
+        instructions: {
+          ...instructions,
+          message: 'Send USDC on the configured network to payTo, then submit the transaction hash to /v1/payments/manual-usdc/verify.'
+        }
+      }
+    };
+  }
+
+  if (method === 'POST' && pathname === '/v1/payments/manual-usdc/verify') {
+    const amountUsdc = body.amountUsdc ?? '0.01';
+    const instructions = manualUsdcInstructionsForAmount(amountUsdc);
+    if (instructions.error) return instructions.error;
+
+    const verification = await verifyOnchainUsdcTransfer({
+      txHash: body.txHash,
+      amountUsdc,
+      payer: body.payer,
+      payTo: instructions.payTo,
+      asset: instructions.asset,
+      network: instructions.network,
+      rpcUrl: process.env.BASE_RPC_URL,
+      fetchFn: globalThis.fetch
+    });
+
+    if (verification.error) return verification.error;
+
+    const ledger = await store.recordExternalPaymentSettlement({
+      provider: 'manual_usdc',
+      providerPaymentId: verification.transaction,
+      action: 'CAPTURE',
+      amountUsdc,
+      actor: verification.payer,
+      status: paymentStatuses.succeeded,
+      idempotencyKey: `manual_usdc:${verification.transaction}`,
+      eventType: 'manual_usdc.transfer_confirmed',
+      metadata: {
+        route: '/v1/payments/manual-usdc/verify',
+        payer: verification.payer,
+        payTo: verification.payTo,
+        network: verification.network,
+        asset: verification.asset,
+        amountAtomic: verification.amount,
+        blockNumber: verification.blockNumber,
+        logIndex: verification.logIndex
+      },
+      payload: verification
+    });
+
+    if (ledger.error) return ledger.error;
+
+    return {
+      status: 202,
+      body: {
+        ok: true,
+        provider: 'manual_usdc',
+        settlement: verification,
+        paymentIntent: ledger.paymentIntent,
+        paymentEvent: ledger.paymentEvent,
+        duplicate: ledger.duplicate
       }
     };
   }

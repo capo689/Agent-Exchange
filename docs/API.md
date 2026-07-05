@@ -356,6 +356,28 @@ The route calls the configured facilitator `/verify` endpoint and then `/settle`
 
 Hosted x402 paid probe. Without a payment header, it returns `402` with a `PAYMENT-REQUIRED` header. With a valid `X-PAYMENT` or `PAYMENT-SIGNATURE` header, it calls facilitator `/verify`, then `/settle`, records one `x402` payment intent/event, and returns a `PAYMENT-RESPONSE` header plus a JSON settlement body. Replayed transaction hashes return `duplicate: true`.
 
+## Manual USDC Gateway Testing
+
+Manual USDC verification is a fallback real-funds path for wallets that cannot be driven by the x402 CLI signer. It does not require exporting a buyer private key. The buyer sends USDC from any wallet app, then submits the transaction hash for on-chain verification.
+
+- `GET /v1/payments/manual-usdc/instructions?amountUsdc=0.01`
+
+Returns the configured network, USDC token address, receiving wallet, and atomic amount.
+
+- `POST /v1/payments/manual-usdc/verify`
+
+Body:
+
+```json
+{
+  "txHash": "0x...",
+  "amountUsdc": "0.01",
+  "payer": "0x..."
+}
+```
+
+`payer` is optional. The route checks the Base transaction receipt for an ERC-20 `Transfer` from `payer` when provided, to configured `payTo`, on the configured USDC asset, for at least the requested amount. A successful verification records one `manual_usdc` payment intent/event keyed by transaction hash. Replayed transaction hashes return `duplicate: true`.
+
 ## Maintenance
 
 `POST /v1/maintenance/cleanup` removes expired/used local challenges, expired sessions, and idempotency records older than 24 hours. It requires the `x-admin-token` header.

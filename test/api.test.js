@@ -442,6 +442,96 @@ test('x402 probe returns payment challenge headers and settles a supplied paymen
   }
 });
 
+test('manual USDC verification records an on-chain transfer in the payment ledger', async () => {
+  const previousEnv = {
+    payTo: process.env.X402_PAY_TO,
+    network: process.env.X402_NETWORK,
+    asset: process.env.X402_ASSET,
+    baseRpcUrl: process.env.BASE_RPC_URL
+  };
+  const previousFetch = globalThis.fetch;
+  const payTo = '0x4707fedb208178ba609626cd654316c8a6f53510';
+  const payer = '0xa8B690F9AEe52bdF344C6C5133eF4DfBAAA12e5D';
+  const asset = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+  const txHash = '0x30999d74fd3d2372829c556665c544ae18a742e8ff3cf5f3571ce6f36bac3175';
+  const transferTopic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  const addressTopic = (address) => `0x${address.toLowerCase().replace(/^0x/, '').padStart(64, '0')}`;
+  const calls = [];
+
+  process.env.X402_PAY_TO = payTo;
+  process.env.X402_NETWORK = 'eip155:8453';
+  process.env.X402_ASSET = asset;
+  delete process.env.BASE_RPC_URL;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        transactionHash: txHash,
+        status: '0x1',
+        blockNumber: '0x123',
+        logs: [
+          {
+            address: asset,
+            topics: [transferTopic, addressTopic(payer), addressTopic(payTo)],
+            data: '0x2710',
+            logIndex: '0x0'
+          }
+        ]
+      }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  try {
+    const client = createClient();
+    const instructions = await client.get('/v1/payments/manual-usdc/instructions', { amountUsdc: '0.01' });
+    assert.equal(instructions.status, 200);
+    assert.equal(instructions.body.instructions.network, 'eip155:8453');
+    assert.equal(instructions.body.instructions.amount, '10000');
+
+    const verified = await client.postWithoutAuth('/v1/payments/manual-usdc/verify', {
+      txHash,
+      amountUsdc: '0.01',
+      payer
+    });
+    assert.equal(verified.status, 202);
+    assert.equal(verified.body.provider, 'manual_usdc');
+    assert.equal(verified.body.settlement.payer, payer.toLowerCase());
+    assert.equal(verified.body.paymentIntent.provider, 'manual_usdc');
+    assert.equal(verified.body.paymentIntent.providerPaymentId, txHash);
+    assert.equal(verified.body.paymentEvent.type, 'manual_usdc.transfer_confirmed');
+
+    const duplicate = await client.postWithoutAuth('/v1/payments/manual-usdc/verify', {
+      txHash,
+      amountUsdc: '0.01',
+      payer
+    });
+    assert.equal(duplicate.status, 202);
+    assert.equal(duplicate.body.duplicate, true);
+    assert.equal(duplicate.body.paymentIntent.id, verified.body.paymentIntent.id);
+
+    const payments = await client.adminGet('/v1/admin/payments', { provider: 'manual_usdc' });
+    assert.equal(payments.status, 200);
+    assert.equal(payments.body.paymentIntents.length, 1);
+    assert.equal(payments.body.paymentEvents.length, 1);
+    assert.equal(calls[0].url, 'https://mainnet.base.org');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousEnv.payTo === undefined) delete process.env.X402_PAY_TO;
+    else process.env.X402_PAY_TO = previousEnv.payTo;
+    if (previousEnv.network === undefined) delete process.env.X402_NETWORK;
+    else process.env.X402_NETWORK = previousEnv.network;
+    if (previousEnv.asset === undefined) delete process.env.X402_ASSET;
+    else process.env.X402_ASSET = previousEnv.asset;
+    if (previousEnv.baseRpcUrl === undefined) delete process.env.BASE_RPC_URL;
+    else process.env.BASE_RPC_URL = previousEnv.baseRpcUrl;
+  }
+});
+
 test('Tier 0 listings are allowed when they do not violate policy', async () => {
   const client = createClient();
   const { seller } = await registerBuyerSeller(client);

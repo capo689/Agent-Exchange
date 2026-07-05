@@ -17,6 +17,7 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 - Added persistent request logs, audit events, admin event APIs, dashboard drilldowns, listing pause, agent flagging, and cleanup controls.
 - Added the sandbox payment ledger: payment intents, signed sandbox webhook ingestion, duplicate webhook dedupe, decline-path handling, and admin payment inspection.
 - Added x402 settlement ledger writes for hosted/admin probes, including transaction-hash dedupe and admin dashboard visibility.
+- Added a manual Base USDC fallback that verifies on-chain transfer receipts by transaction hash and records them in the payment ledger.
 
 ## 2026-07-04
 

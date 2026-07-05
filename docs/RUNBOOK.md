@@ -226,3 +226,25 @@ npm run x402:probe
 Before running mainnet, set Render `X402_NETWORK=eip155:8453` and `X402_ASSET=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`. Use a dedicated hot wallet with only the small amount intended for testing, plus enough Base ETH for gas. Do not use a primary wallet private key.
 
 After a successful probe, check `/admin` or `GET /v1/admin/payments?provider=x402` with `x-admin-token` to verify the settlement is visible in the payment ledger.
+
+## Manual USDC Fallback
+
+Use this path when a buyer wallet cannot be driven by the x402 CLI signer or when the CDP mainnet facilitator is not configured yet. It verifies a normal USDC transfer on Base and records it in the same payment ledger.
+
+Get payment instructions:
+
+```bash
+curl -sS 'https://YOUR_RENDER_SERVICE.onrender.com/v1/payments/manual-usdc/instructions?amountUsdc=0.01'
+```
+
+Send USDC from the wallet app to `payTo` on the returned network, then copy the transaction hash. Verify it:
+
+```bash
+curl -sS -X POST 'https://YOUR_RENDER_SERVICE.onrender.com/v1/payments/manual-usdc/verify' \
+  -H 'content-type: application/json' \
+  -d '{"txHash":"0x...","amountUsdc":"0.01"}'
+```
+
+Expected result: HTTP `202`, `provider: manual_usdc`, a confirmed settlement object, and one payment intent/event visible at `/admin` or `GET /v1/admin/payments?provider=manual_usdc`.
+
+Set `BASE_RPC_URL` in Render if the default public Base RPC is unavailable or rate-limited. Replayed transaction hashes return `duplicate: true` and do not create a second payment intent.
