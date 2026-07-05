@@ -16,6 +16,7 @@ import {
 import { verifyOnchainUsdcTransfer } from './onchain.js';
 import {
   buildX402PaymentRequirements,
+  canonicalJson,
   paymentStatuses,
   parseX402PaymentPayload,
   settleX402Payment,
@@ -26,6 +27,7 @@ import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
 import { createPostgresStore } from './postgres-store.js';
 import { createRateLimiter } from './rate-limit.js';
 import { buildReconciliationReport } from './reconciliation.js';
+import { deliverOutboundWebhook } from './outbound-webhooks.js';
 import { createStore } from './store.js';
 import { canTransition, getTransition } from './trades.js';
 
@@ -439,9 +441,12 @@ function clientIp(req) {
 
 async function resolveRequestActor(headers, store) {
   const token = getBearerToken(headers);
-  if (!token || typeof store.getSessionByToken !== 'function') return {};
-  const session = await store.getSessionByToken(token);
-  return session ? { actorAgentId: session.agentId, sessionId: session.id } : {};
+  if (token && typeof store.getSessionByToken === 'function') {
+    const session = await store.getSessionByToken(token);
+    if (session) return { actorAgentId: session.agentId, sessionId: session.id };
+  }
+  const signedAgentId = getHeader(headers, 'x-agent-id');
+  return signedAgentId ? { actorAgentId: signedAgentId, sessionId: null } : {};
 }
 
 async function safeRecordRequest(store, input) {
@@ -456,7 +461,17 @@ async function safeRecordRequest(store, input) {
 async function safeRecordAudit(store, input) {
   if (typeof store.recordAuditEvent !== 'function') return;
   try {
-    await store.recordAuditEvent(input);
+    const event = await store.recordAuditEvent(input);
+    const outboundWebhook = getConfig().outboundWebhook;
+    if (event && outboundWebhook.configured) {
+      deliverOutboundWebhook({
+        url: outboundWebhook.url,
+        secret: outboundWebhook.secret,
+        event
+      }).catch((error) => {
+        logWarn('webhook.delivery_failed', { requestId: input.requestId, type: input.type, error });
+      });
+    }
   } catch (error) {
     logWarn('audit.event_log_failed', { requestId: input.requestId, type: input.type, error });
   }
@@ -483,15 +498,163 @@ function getBearerToken(headers) {
   return match ? match[1].trim() : null;
 }
 
-async function authenticateAgent(headers, store) {
+function normalizeQueryForSignature(query = {}) {
+  if (typeof query?.entries === 'function') {
+    return Object.fromEntries([...query.entries()].sort(([a], [b]) => a.localeCompare(b)));
+  }
+  return Object.fromEntries(
+    Object.entries(query ?? {})
+      .filter(([, value]) => value !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+  );
+}
+
+function signedRequestBodyDigest(body = {}) {
+  return createHash('sha256').update(canonicalJson(body ?? {})).digest('hex');
+}
+
+export function canonicalSignedRequest({ agentId, method, pathname, query = {}, body = {}, timestamp, nonce }) {
+  return [
+    'agent-exchange.request.v1',
+    `agent_id:${agentId}`,
+    `method:${String(method ?? '').toUpperCase()}`,
+    `path:${pathname}`,
+    `query:${canonicalJson(normalizeQueryForSignature(query))}`,
+    `body_sha256:${signedRequestBodyDigest(body)}`,
+    `timestamp:${timestamp}`,
+    `nonce:${nonce}`
+  ].join('\n');
+}
+
+function getSignedRequestHeaders(headers) {
+  const agentId = getHeader(headers, 'x-agent-id');
+  const timestamp = getHeader(headers, 'x-agent-timestamp');
+  const nonce = getHeader(headers, 'x-agent-nonce');
+  const signature = getHeader(headers, 'x-agent-signature');
+  if (!agentId && !timestamp && !nonce && !signature) return null;
+  return {
+    agentId: typeof agentId === 'string' ? agentId : '',
+    timestamp: typeof timestamp === 'string' ? timestamp : '',
+    nonce: typeof nonce === 'string' ? nonce : '',
+    signature: typeof signature === 'string' ? signature : ''
+  };
+}
+
+async function authenticateSignedAgent(headers, store, request = {}) {
+  const signed = getSignedRequestHeaders(headers);
+  if (!signed) return null;
+
+  const missing = Object.entries(signed).filter(([, value]) => !value).map(([name]) => name);
+  if (missing.length > 0) {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'invalid_signed_request',
+          message: 'Signed requests require x-agent-id, x-agent-timestamp, x-agent-nonce, and x-agent-signature.',
+          missing
+        }
+      }
+    };
+  }
+
+  const timestampMs = Date.parse(signed.timestamp);
+  const skewMs = Math.abs(Date.now() - timestampMs);
+  if (Number.isNaN(timestampMs) || skewMs > 5 * 60 * 1000) {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'signed_request_timestamp_invalid',
+          message: 'Signed request timestamp must be an ISO timestamp within five minutes of server time.'
+        }
+      }
+    };
+  }
+
+  const agent = await store.getAgent(signed.agentId);
+  if (!agent || agent.status !== 'active' || !agent.publicKeyJwk) {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'signed_request_agent_inactive',
+          message: 'Signed request agent is missing, inactive, or has no public key.'
+        }
+      }
+    };
+  }
+
+  const canonical = canonicalSignedRequest({
+    agentId: signed.agentId,
+    method: request.method,
+    pathname: request.pathname,
+    query: request.query,
+    body: request.body,
+    timestamp: signed.timestamp,
+    nonce: signed.nonce
+  });
+  const valid = verifyEd25519Signature({
+    publicKeyJwk: agent.publicKeyJwk,
+    message: canonical,
+    signatureBase64: signed.signature
+  });
+  if (!valid) {
+    return {
+      error: {
+        status: 401,
+        body: {
+          error: 'signed_request_signature_invalid',
+          message: 'Signed request signature could not be verified.'
+        }
+      }
+    };
+  }
+
+  if (typeof store.recordSignedRequestNonce !== 'function') {
+    return {
+      error: {
+        status: 503,
+        body: {
+          error: 'signed_request_nonce_store_unavailable',
+          message: 'Signed request replay protection is unavailable.'
+        }
+      }
+    };
+  }
+
+  const nonceResult = await store.recordSignedRequestNonce({
+    agentId: signed.agentId,
+    nonce: signed.nonce,
+    expiresAt: new Date(timestampMs + 5 * 60 * 1000).toISOString()
+  });
+  if (nonceResult.error) return nonceResult;
+
+  return {
+    auth: {
+      session: null,
+      agent,
+      agentId: agent.id,
+      authMethod: 'signed_request',
+      signedRequest: {
+        timestamp: signed.timestamp,
+        nonce: signed.nonce
+      }
+    }
+  };
+}
+
+async function authenticateAgent(headers, store, request = {}) {
   const token = getBearerToken(headers);
   if (!token) {
+    const signedResult = await authenticateSignedAgent(headers, store, request);
+    if (signedResult) return signedResult;
     return {
       error: {
         status: 401,
         body: {
           error: 'authentication_required',
-          message: 'Use Authorization: Bearer <session token> for this request.'
+          message: 'Use Authorization: Bearer <session token> or Ed25519 signed request headers for this request.'
         }
       }
     };
@@ -523,7 +686,7 @@ async function authenticateAgent(headers, store) {
     };
   }
 
-  return { auth: { session, agent, agentId: agent.id } };
+  return { auth: { session, agent, agentId: agent.id, authMethod: 'bearer_session' } };
 }
 
 function requireAdmin(headers) {
@@ -556,12 +719,12 @@ function isAdminRequest(headers) {
   return Boolean(expected && getHeader(headers, 'x-admin-token') === expected);
 }
 
-async function authorizeAdminOrAgent(headers, store) {
+async function authorizeAdminOrAgent(headers, store, request = {}) {
   if (isAdminRequest(headers)) {
     return { access: { role: 'admin', isAdmin: true, agentId: null, agent: null, session: null } };
   }
 
-  const authResult = await authenticateAgent(headers, store);
+  const authResult = await authenticateAgent(headers, store, request);
   if (authResult.error) return authResult;
   return {
     access: {
@@ -978,7 +1141,7 @@ export async function handleApiRequest(
 
   const listingOffersMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/offers$/);
   if (method === 'GET' && listingOffersMatch) {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const listQuery = parseListQuery(query, {
       buyerAgentId: {},
@@ -1020,7 +1183,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && listingAutoAcceptMatch) {
-    const authResult = await authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
     if (authResult.error) return authResult.error;
 
     const listing = await store.getListing(listingAutoAcceptMatch[1]);
@@ -1051,7 +1214,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/agents') {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const agents = accessResult.access.isAdmin
       ? await store.listAgents()
@@ -1288,6 +1451,25 @@ export async function handleApiRequest(
         paymentEvents: await store.listPaymentEvents({ paymentIntentId: paymentIntent.id, limit: 100, offset: 0 })
       }
     };
+  }
+
+  const adminPaymentRepairMatch = pathname.match(/^\/v1\/admin\/payments\/([^/]+)\/repair$/);
+  if (method === 'POST' && adminPaymentRepairMatch) {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    if (typeof store.adminRepairPaymentIntent !== 'function') {
+      return { status: 503, body: { error: 'payment_repair_unavailable' } };
+    }
+    const result = await store.adminRepairPaymentIntent({
+      paymentIntentId: adminPaymentRepairMatch[1],
+      status: body.status,
+      reason: body.reason,
+      force: body.force === true,
+      metadata: body.metadata ?? {},
+      actor: 'admin'
+    });
+    if (result.error) return result.error;
+    return { status: 200, body: result };
   }
 
   if (method === 'GET' && pathname === '/v1/payments/x402/requirements') {
@@ -1613,7 +1795,7 @@ export async function handleApiRequest(
 
   const agentReputationMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/reputation$/);
   if (method === 'GET' && agentReputationMatch) {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const agent = await store.getAgent(agentReputationMatch[1]);
     if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
@@ -1630,7 +1812,7 @@ export async function handleApiRequest(
 
   const agentOnboardingMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/onboarding$/);
   if (method === 'GET' && agentOnboardingMatch) {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const agent = await store.getAgent(agentOnboardingMatch[1]);
     if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
@@ -1642,7 +1824,7 @@ export async function handleApiRequest(
 
   const agentMatch = pathname.match(/^\/v1\/agents\/([^/]+)$/);
   if (method === 'GET' && agentMatch) {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const agent = await store.getAgent(agentMatch[1]);
     if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
@@ -1728,7 +1910,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/listings') {
-    const authResult = await authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
     if (authResult.error) return authResult.error;
 
     const input = body;
@@ -1779,7 +1961,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/trades') {
-    const authResult = await authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
     if (authResult.error) return authResult.error;
 
     const input = body;
@@ -1848,7 +2030,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/trades') {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const listQuery = parseListQuery(query, {
       listingId: {},
@@ -1867,7 +2049,7 @@ export async function handleApiRequest(
 
   const tradeMatch = pathname.match(/^\/v1\/trades\/([^/]+)$/);
   if (method === 'GET' && tradeMatch) {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const trade = await store.getTrade(tradeMatch[1]);
     if (!trade) return { status: 404, body: { error: 'trade_not_found' } };
@@ -1878,7 +2060,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/offers') {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const listQuery = parseListQuery(query, {
       listingId: {},
@@ -1897,7 +2079,7 @@ export async function handleApiRequest(
 
   const offerMatch = pathname.match(/^\/v1\/offers\/([^/]+)$/);
   if (method === 'GET' && offerMatch) {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const offer = await store.getOffer(offerMatch[1]);
     if (!offer) return { status: 404, body: { error: 'offer_not_found' } };
@@ -1908,7 +2090,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/offers') {
-    const authResult = await authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
     if (authResult.error) return authResult.error;
 
     const errors = validateOfferInput(body);
@@ -1958,7 +2140,7 @@ export async function handleApiRequest(
 
   const offerActionMatch = pathname.match(/^\/v1\/offers\/([^/]+)\/([^/]+)$/);
   if (method === 'POST' && offerActionMatch) {
-    const authResult = await authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
     if (authResult.error) return authResult.error;
 
     const [, offerId, rawAction] = offerActionMatch;
@@ -2038,7 +2220,7 @@ export async function handleApiRequest(
 
   const autoAcceptDisableMatch = pathname.match(/^\/v1\/auto-accept-rules\/([^/]+)\/disable$/);
   if (method === 'POST' && autoAcceptDisableMatch) {
-    const authResult = await authenticateAgent(headers, store);
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
     if (authResult.error) return authResult.error;
     const actorError = requireBodyActorMatchesSession(body, authResult.auth);
     if (actorError) return actorError;
@@ -2052,7 +2234,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/inventory/reservations') {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const reservations = await store.listInventoryReservations();
     return {
@@ -2104,7 +2286,7 @@ export async function handleApiRequest(
       if (adminError) return adminError;
       actor = 'admin';
     } else {
-      const authResult = await authenticateAgent(headers, store);
+      const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
       if (authResult.error) return authResult.error;
       const actorError = requireBodyActorMatchesSession(body, authResult.auth);
       if (actorError) return actorError;
@@ -2219,7 +2401,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/escrow/events') {
-    const accessResult = await authorizeAdminOrAgent(headers, store);
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
     const escrowEvents = await store.listEscrowEvents();
     if (accessResult.access.isAdmin) {

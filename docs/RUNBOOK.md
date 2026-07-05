@@ -103,6 +103,44 @@ curl -sS -X POST http://localhost:8787/v1/maintenance/cleanup \
 
 This removes used/expired challenges, expired sessions, and idempotency records older than 24 hours. In production this becomes a scheduled job with scoped admin/service authentication.
 
+## Hosted Concurrency Drill
+
+Run this against the hosted service after DB migrations or inventory changes:
+
+```bash
+AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run hosted:concurrency
+```
+
+The script creates drill-only agents/listings and fires parallel one-unit direct trades. Pass condition: successful trades never exceed the listing quantity and final available inventory never goes negative.
+
+Defaults are intentionally rate-limit friendly: 8 buyers, 5 available units, and a short delay while registering drill agents. Override with `CONCURRENCY_BUYERS`, `CONCURRENCY_QUANTITY`, and `CONCURRENCY_REGISTER_DELAY_MS`.
+
+## Backup / Restore Drill
+
+Run a read-only table/count and store-connectivity check with:
+
+```bash
+DATABASE_URL='<render database url>' npm run backup:drill
+```
+
+Optional rollback-only write check:
+
+```bash
+DATABASE_URL='<render database url>' BACKUP_DRILL_WRITE_TEST=true npm run backup:drill
+```
+
+This does not perform a destructive restore. It verifies that the core tables are readable and that a temporary write can be rolled back when enabled. Full restore should still be done from Supabase managed backups or `pg_dump`/`psql` into a staging database before production.
+
+## Outbound Webhook Delivery
+
+Set `OUTBOUND_WEBHOOK_URL` and `OUTBOUND_WEBHOOK_SECRET` in Render to receive best-effort HMAC-signed audit-event webhooks. The receiver should verify `x-agent-exchange-signature` using:
+
+```text
+HMAC_SHA256(secret, x-agent-exchange-timestamp + "." + canonical_json(payload))
+```
+
+Webhook delivery failures are logged as warnings and do not block marketplace requests.
+
 ## Production Admin Token
 
 Render must set `ADMIN_TOKEN` in the `MAX` environment group before launch. The health check should report:
@@ -113,7 +151,7 @@ Render must set `ADMIN_TOKEN` in the `MAX` environment group before launch. The 
 }
 ```
 
-If it reports `false`, admin-only cleanup and dispute-resolution routes are deliberately unavailable.
+If it reports `false`, admin-only cleanup, payment repair, and dispute-resolution routes are deliberately unavailable.
 
 ## Abuse / Prohibited Listing
 

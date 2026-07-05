@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 
 export function generateAgentKeypair() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -12,6 +12,61 @@ export function signChallenge(privateKey, canonicalChallenge) {
   return sign(null, Buffer.from(canonicalChallenge), privateKey).toString('base64');
 }
 
+export function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function normalizeQueryForSignature(query = {}) {
+  return Object.fromEntries(
+    Object.entries(query ?? {})
+      .filter(([, value]) => value !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+  );
+}
+
+function bodyDigest(body = {}) {
+  return createHash('sha256').update(canonicalJson(body ?? {})).digest('hex');
+}
+
+export function canonicalSignedRequest({ agentId, method, pathname, query = {}, body = {}, timestamp, nonce }) {
+  return [
+    'agent-exchange.request.v1',
+    `agent_id:${agentId}`,
+    `method:${String(method ?? '').toUpperCase()}`,
+    `path:${pathname}`,
+    `query:${canonicalJson(normalizeQueryForSignature(query))}`,
+    `body_sha256:${bodyDigest(body)}`,
+    `timestamp:${timestamp}`,
+    `nonce:${nonce}`
+  ].join('\n');
+}
+
+export function signRequestHeaders({
+  agentId,
+  privateKey,
+  method,
+  pathname,
+  query = {},
+  body = {},
+  timestamp = new Date().toISOString(),
+  nonce = randomUUID()
+}) {
+  const canonical = canonicalSignedRequest({ agentId, method, pathname, query, body, timestamp, nonce });
+  return {
+    'x-agent-id': agentId,
+    'x-agent-timestamp': timestamp,
+    'x-agent-nonce': nonce,
+    'x-agent-signature': sign(null, Buffer.from(canonical), privateKey).toString('base64')
+  };
+}
+
 function queryString(query = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
@@ -22,13 +77,19 @@ function queryString(query = {}) {
 }
 
 export class AgentExchangeClient {
-  constructor({ baseUrl = 'http://localhost:8787', sessionToken = null } = {}) {
+  constructor({ baseUrl = 'http://localhost:8787', sessionToken = null, agentId = null, privateKey = null } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.sessionToken = sessionToken;
+    this.agentId = agentId;
+    this.privateKey = privateKey;
   }
 
   withSession(sessionToken) {
     return new AgentExchangeClient({ baseUrl: this.baseUrl, sessionToken });
+  }
+
+  withSignedRequests(agentId, privateKey) {
+    return new AgentExchangeClient({ baseUrl: this.baseUrl, agentId, privateKey });
   }
 
   setSessionToken(sessionToken) {
@@ -36,15 +97,33 @@ export class AgentExchangeClient {
     return this;
   }
 
+  setSignedRequests(agentId, privateKey) {
+    this.agentId = agentId;
+    this.privateKey = privateKey;
+    return this;
+  }
+
   async request(method, path, body, headers = {}) {
+    const url = new URL(`${this.baseUrl}${path}`);
     const authHeaders = this.sessionToken
       ? { authorization: `Bearer ${this.sessionToken}` }
+      : {};
+    const signedHeaders = !this.sessionToken && this.agentId && this.privateKey
+      ? signRequestHeaders({
+          agentId: this.agentId,
+          privateKey: this.privateKey,
+          method,
+          pathname: url.pathname,
+          query: Object.fromEntries(url.searchParams.entries()),
+          body: body ?? {}
+        })
       : {};
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
         'content-type': 'application/json',
         ...authHeaders,
+        ...signedHeaders,
         ...headers
       },
       body: body ? JSON.stringify(body) : undefined

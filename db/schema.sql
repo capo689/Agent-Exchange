@@ -291,6 +291,15 @@ create table if not exists idempotency_records (
   created_at timestamptz not null default now()
 );
 
+create table if not exists signed_request_nonces (
+  id text primary key,
+  agent_id text not null references agents(id) on delete cascade,
+  nonce text not null,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  unique (agent_id, nonce)
+);
+
 create index if not exists challenges_agent_id_idx on challenges(agent_id);
 create index if not exists sessions_agent_id_idx on sessions(agent_id);
 create index if not exists listings_seller_agent_id_idx on listings(seller_agent_id);
@@ -318,6 +327,8 @@ create index if not exists audit_events_resource_idx on audit_events(resource_ty
 create index if not exists audit_events_actor_agent_id_idx on audit_events(actor_agent_id);
 create index if not exists audit_events_session_id_idx on audit_events(session_id);
 create index if not exists idempotency_records_created_at_idx on idempotency_records(created_at);
+create index if not exists signed_request_nonces_agent_id_idx on signed_request_nonces(agent_id);
+create index if not exists signed_request_nonces_expires_at_idx on signed_request_nonces(expires_at);
 
 create or replace function reserve_listing_inventory(
   p_reservation_id text,
@@ -419,6 +430,7 @@ alter table payment_events enable row level security;
 alter table reputation_events enable row level security;
 alter table moderation_events enable row level security;
 alter table idempotency_records enable row level security;
+alter table signed_request_nonces enable row level security;
 
 -- The API should use the server-side Supabase secret key / service role.
 -- Public client policies come later, after route-level session auth is enforced.
@@ -466,7 +478,8 @@ begin
     'payment_events',
     'reputation_events',
     'moderation_events',
-    'idempotency_records'
+    'idempotency_records',
+    'signed_request_nonces'
   ]
   loop
     if not exists (

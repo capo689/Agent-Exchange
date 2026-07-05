@@ -45,6 +45,7 @@ function createInitialState() {
     reputationEvents: [],
     requestLogs: [],
     auditEvents: [],
+    signedRequestNonces: [],
     idempotencyRecords: []
   };
 }
@@ -125,6 +126,9 @@ export function createStore({ filePath } = {}) {
   const reputationEvents = mapById(state.reputationEvents ?? []);
   const requestLogs = mapById(state.requestLogs ?? []);
   const auditEvents = mapById(state.auditEvents ?? []);
+  const signedRequestNonces = new Map(
+    (state.signedRequestNonces ?? []).map((record) => [`${record.agentId}:${record.nonce}`, record])
+  );
   const idempotencyInFlight = new Map();
   const idempotencyRecords = new Map(
     (state.idempotencyRecords ?? []).map((record) => [record.key, record])
@@ -155,6 +159,7 @@ export function createStore({ filePath } = {}) {
           reputationEvents: [...reputationEvents.values()],
           requestLogs: [...requestLogs.values()],
           auditEvents: [...auditEvents.values()],
+          signedRequestNonces: [...signedRequestNonces.values()],
           idempotencyRecords: [...idempotencyRecords.values()]
         },
         null,
@@ -638,6 +643,7 @@ export function createStore({ filePath } = {}) {
       const nowMs = now.getTime();
       let removedChallenges = 0;
       let removedSessions = 0;
+      let removedSignedRequestNonces = 0;
       let removedIdempotencyRecords = 0;
 
       for (const [id, challenge] of challenges.entries()) {
@@ -655,6 +661,12 @@ export function createStore({ filePath } = {}) {
       }
 
       const idempotencyTtlMs = 24 * 60 * 60 * 1000;
+      for (const [key, record] of signedRequestNonces.entries()) {
+        if (Date.parse(record.expiresAt) <= nowMs) {
+          signedRequestNonces.delete(key);
+          removedSignedRequestNonces += 1;
+        }
+      }
       for (const [key, record] of idempotencyRecords.entries()) {
         if (Date.parse(record.createdAt) + idempotencyTtlMs <= nowMs) {
           idempotencyRecords.delete(key);
@@ -666,8 +678,26 @@ export function createStore({ filePath } = {}) {
       return {
         removedChallenges,
         removedSessions,
+        removedSignedRequestNonces,
         removedIdempotencyRecords
       };
+    },
+
+    recordSignedRequestNonce({ agentId, nonce, expiresAt }) {
+      const key = `${agentId}:${nonce}`;
+      if (signedRequestNonces.has(key)) {
+        return { error: { status: 409, body: { error: 'signed_request_replay' } } };
+      }
+      const record = {
+        id: `srn_${randomUUID()}`,
+        agentId,
+        nonce,
+        expiresAt,
+        createdAt: nowIso()
+      };
+      signedRequestNonces.set(key, record);
+      persist();
+      return { record };
     },
 
     createChallenge(agentId) {
@@ -1451,6 +1481,72 @@ export function createStore({ filePath } = {}) {
       });
       persist();
       return { duplicate: false, event, paymentIntent };
+    },
+
+    adminRepairPaymentIntent(input) {
+      const paymentIntent = paymentIntents.get(input.paymentIntentId);
+      if (!paymentIntent) {
+        return { error: { status: 404, body: { error: 'payment_intent_not_found' } } };
+      }
+      if (!Object.values(paymentStatuses).includes(input.status)) {
+        return { error: { status: 400, body: { error: 'invalid_payment_status' } } };
+      }
+      if (!input.reason || typeof input.reason !== 'string') {
+        return { error: { status: 400, body: { error: 'repair_reason_required' } } };
+      }
+      if (
+        isTerminalPaymentStatus(paymentIntent.status) &&
+        paymentIntent.status !== input.status &&
+        input.force !== true
+      ) {
+        return {
+          error: {
+            status: 409,
+            body: {
+              error: 'terminal_payment_repair_requires_force',
+              currentStatus: paymentIntent.status,
+              requestedStatus: input.status
+            }
+          }
+        };
+      }
+
+      const now = nowIso();
+      const previousStatus = paymentIntent.status;
+      const event = {
+        id: input.eventId ?? `pevt_${randomUUID()}`,
+        paymentIntentId: paymentIntent.id,
+        provider: paymentIntent.provider,
+        type: 'admin.payment_status_repaired',
+        status: input.status,
+        payload: {
+          previousStatus,
+          repairedBy: input.actor ?? 'admin',
+          reason: input.reason,
+          force: input.force === true,
+          metadata: input.metadata ?? {}
+        },
+        createdAt: now
+      };
+      paymentEvents.set(event.id, event);
+      paymentIntent.status = input.status;
+      paymentIntent.updatedAt = now;
+      paymentIntent.completedAt = isTerminalPaymentStatus(input.status) ? now : paymentIntent.completedAt;
+      recordAuditEvent({
+        type: 'payment.intent_repaired',
+        severity: 'warn',
+        resourceType: 'payment_intent',
+        resourceId: paymentIntent.id,
+        payload: {
+          eventId: event.id,
+          previousStatus,
+          status: input.status,
+          force: input.force === true,
+          reason: input.reason
+        }
+      });
+      persist();
+      return { event, paymentIntent };
     },
 
     listModerationEvents() {

@@ -250,7 +250,8 @@ function resourceGroup(resourceType) {
     agent: 'agents',
     listing: 'listings',
     offer: 'offers',
-    trade: 'trades'
+    trade: 'trades',
+    payment_intent: 'payments'
   }[resourceType] ?? null;
 }
 
@@ -272,10 +273,12 @@ function renderDetail(data) {
   $('detail-label').textContent = `${type} / ${data.id}`;
   const canPause = type === 'listings' && resource.status !== 'paused';
   const canFlag = type === 'agents' && resource.status !== 'flagged';
+  const canRepairPayment = type === 'payments';
   $('detail-panel').innerHTML = `
     <div class="detail-actions">
       ${canPause ? '<button class="danger" type="button" data-action="pause-listing">Pause listing</button>' : ''}
       ${canFlag ? '<button class="danger" type="button" data-action="flag-agent">Flag agent</button>' : ''}
+      ${canRepairPayment ? '<button class="danger" type="button" data-action="repair-payment">Repair payment</button>' : ''}
       <button type="button" data-action="refresh-detail">Refresh</button>
     </div>
     <div class="detail-grid">${summaryCells(resource)}</div>
@@ -336,6 +339,21 @@ async function runDetailAction(action) {
   if (action === 'flag-agent' && state.selection.type === 'agents') {
     await postAdmin(`/v1/admin/agents/${encodeURIComponent(state.selection.id)}/flag`, {
       reason: 'Flagged from admin dashboard'
+    });
+    await inspectResource(state.selection.type, state.selection.id);
+    await refresh();
+    return;
+  }
+  if (action === 'repair-payment' && state.selection.type === 'payments') {
+    const status = prompt('Payment status: PENDING, SUCCEEDED, DECLINED, or FAILED');
+    if (!status) return;
+    const reason = prompt('Reason for payment repair');
+    if (!reason) return;
+    const force = confirm('Force repair if the current payment status is terminal?');
+    await postAdmin(`/v1/admin/payments/${encodeURIComponent(state.selection.id)}/repair`, {
+      status: status.trim().toUpperCase(),
+      reason,
+      force
     });
     await inspectResource(state.selection.type, state.selection.id);
     await refresh();

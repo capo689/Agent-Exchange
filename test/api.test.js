@@ -10,6 +10,7 @@ import {
 import { encodeAbiParameters, encodeEventTopics } from 'viem';
 import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
 import { escrowContractAbi, escrowTradeIdHash } from '../src/escrow-contract.js';
+import { signRequestHeaders } from '../sdk/agent-exchange-sdk.js';
 import { createRateLimiter } from '../src/rate-limit.js';
 import { createApp, handleApiRequest } from '../src/server.js';
 import { createStore } from '../src/store.js';
@@ -101,6 +102,7 @@ async function registerBasicAgent(client, name, overrides = {}) {
 
   const agent = {
     ...response.body.agent,
+    privateKey,
     sessionToken: verified.body.session.token,
     authHeaders: {
       authorization: `Bearer ${verified.body.session.token}`
@@ -234,6 +236,7 @@ test('config accepts Render Supabase env group names without exposing secrets in
     adminConfigured: false,
     supabaseConfigured: true,
     supabaseJwksConfigured: true,
+    outboundWebhookConfigured: false,
     payment: {
       provider: 'sandbox',
       sandboxWebhookConfigured: false,
@@ -758,6 +761,53 @@ test('bearer session must match declared agent identity on mutations', async () 
   assert.equal(listing.body.error, 'authenticated_actor_mismatch');
 });
 
+test('signed agent requests authenticate mutations and reject nonce replay', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const body = {
+    sellerAgentId: seller.id,
+    title: 'Signed request listing',
+    description: 'Seller signs without bearer session.',
+    category: 'digital_good',
+    assuranceTier: 0,
+    priceUsdc: '1.00'
+  };
+  const timestamp = new Date().toISOString();
+  const nonce = 'signed-listing-nonce';
+  const headers = signRequestHeaders({
+    agentId: seller.id,
+    privateKey: seller.privateKey,
+    method: 'POST',
+    pathname: '/v1/listings',
+    body,
+    timestamp,
+    nonce
+  });
+
+  const created = await client.postWithoutAuth('/v1/listings', body, headers);
+  const replay = await client.postWithoutAuth('/v1/listings', body, headers);
+  const mismatchBody = {
+    ...body,
+    sellerAgentId: buyer.id,
+    title: 'Signed request mismatch'
+  };
+  const mismatch = await client.postWithoutAuth('/v1/listings', mismatchBody, signRequestHeaders({
+    agentId: seller.id,
+    privateKey: seller.privateKey,
+    method: 'POST',
+    pathname: '/v1/listings',
+    body: mismatchBody,
+    nonce: 'signed-mismatch-nonce'
+  }));
+
+  assert.equal(created.status, 201);
+  assert.equal(created.body.listing.sellerAgentId, seller.id);
+  assert.equal(replay.status, 409);
+  assert.equal(replay.body.error, 'signed_request_replay');
+  assert.equal(mismatch.status, 403);
+  assert.equal(mismatch.body.error, 'authenticated_actor_mismatch');
+});
+
 test('agents can register and verify an Ed25519 challenge once', async () => {
   const client = createClient();
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -1234,6 +1284,45 @@ test('sandbox payment webhooks require signatures and dedupe event ids', async (
       process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET = previousSecret;
     }
   }
+});
+
+test('admin payment repair requires reason and force for terminal status changes', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const listing = await createFungibleListing(client, seller);
+  const trade = await client.post('/v1/trades', {
+    listingId: listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 100,
+    assuranceAcknowledgement: true
+  });
+  const accepted = await client.post(`/v1/trades/${trade.body.trade.id}/accept`, {
+    actorAgentId: seller.id
+  });
+  const paymentIntentId = accepted.body.paymentIntent.id;
+
+  const missingReason = await client.adminPost(`/v1/admin/payments/${paymentIntentId}/repair`, {
+    status: 'FAILED'
+  });
+  const unforced = await client.adminPost(`/v1/admin/payments/${paymentIntentId}/repair`, {
+    status: 'FAILED',
+    reason: 'ops drill'
+  });
+  const forced = await client.adminPost(`/v1/admin/payments/${paymentIntentId}/repair`, {
+    status: 'FAILED',
+    reason: 'ops drill',
+    force: true,
+    metadata: { ticket: 'test' }
+  });
+  const detail = await client.adminGet(`/v1/admin/payments/${paymentIntentId}`);
+
+  assert.equal(missingReason.status, 400);
+  assert.equal(missingReason.body.error, 'repair_reason_required');
+  assert.equal(unforced.status, 409);
+  assert.equal(unforced.body.error, 'terminal_payment_repair_requires_force');
+  assert.equal(forced.status, 200);
+  assert.equal(forced.body.paymentIntent.status, 'FAILED');
+  assert.ok(detail.body.paymentEvents.some((event) => event.type === 'admin.payment_status_repaired'));
 });
 
 test('trade actions enforce buyer seller roles', async () => {

@@ -91,6 +91,11 @@ export function getConfig(env = process.env) {
       authMaxRequests: parsePositiveInteger(env.RATE_LIMIT_AUTH_MAX_REQUESTS, DEFAULT_RATE_LIMIT_AUTH_MAX_REQUESTS)
     },
     databaseUrl,
+    outboundWebhook: {
+      configured: Boolean(env.OUTBOUND_WEBHOOK_URL && env.OUTBOUND_WEBHOOK_SECRET),
+      url: env.OUTBOUND_WEBHOOK_URL ?? '',
+      secret: env.OUTBOUND_WEBHOOK_SECRET ?? ''
+    },
     payment: {
       provider: paymentProvider,
       sandboxWebhookConfigured: Boolean(env.PAYMENT_SANDBOX_WEBHOOK_SECRET),
@@ -150,6 +155,7 @@ export function getSafeRuntimeStatus(env = process.env) {
         config.supabase.secretKey
     ),
     supabaseJwksConfigured: Boolean(config.supabase.jwksUrl),
+    outboundWebhookConfigured: config.outboundWebhook.configured,
     payment: {
       provider: config.payment.provider,
       sandboxWebhookConfigured: config.payment.sandboxWebhookConfigured,

@@ -779,6 +779,10 @@ export function createPostgresStore({ connectionString }) {
         [now]
       );
       const removedSessions = await query('delete from sessions where expires_at <= $1', [now]);
+      const removedSignedRequestNonces = await query(
+        'delete from signed_request_nonces where expires_at <= $1',
+        [now]
+      ).catch(() => ({ rowCount: 0 }));
       const removedIdempotencyRecords = await query(
         `delete from idempotency_records where created_at + interval '24 hours' <= $1`,
         [now]
@@ -786,8 +790,38 @@ export function createPostgresStore({ connectionString }) {
       return {
         removedChallenges: removedChallenges.rowCount,
         removedSessions: removedSessions.rowCount,
+        removedSignedRequestNonces: removedSignedRequestNonces.rowCount,
         removedIdempotencyRecords: removedIdempotencyRecords.rowCount
       };
+    },
+
+    async recordSignedRequestNonce({ agentId, nonce, expiresAt }) {
+      try {
+        const { rows } = await query(
+          `insert into signed_request_nonces (id, agent_id, nonce, expires_at)
+           values ($1, $2, $3, $4)
+           on conflict (agent_id, nonce) do nothing
+           returning *`,
+          [`srn_${randomUUID()}`, agentId, nonce, expiresAt]
+        );
+        if (!rows[0]) {
+          return { error: { status: 409, body: { error: 'signed_request_replay' } } };
+        }
+        return { record: rows[0] };
+      } catch (error) {
+        if (error.code === '42P01') {
+          return {
+            error: {
+              status: 503,
+              body: {
+                error: 'signed_request_nonce_store_missing',
+                message: 'Run the signed request nonce migration before enabling signed request auth.'
+              }
+            }
+          };
+        }
+        throw error;
+      }
     },
 
     async createChallenge(agentId) {
@@ -1888,6 +1922,101 @@ export function createPostgresStore({ connectionString }) {
         await client.query('commit');
         return {
           duplicate: false,
+          event: paymentEventFromRow(eventResult.rows[0]),
+          paymentIntent: updatedPaymentIntent
+        };
+      } catch (error) {
+        await client.query('rollback');
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async adminRepairPaymentIntent(input) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const paymentIntentResult = await client.query(
+          'select * from payment_intents where id = $1 for update',
+          [input.paymentIntentId]
+        );
+        const paymentIntent = paymentIntentFromRow(paymentIntentResult.rows[0]);
+        if (!paymentIntent) {
+          await client.query('rollback');
+          return { error: { status: 404, body: { error: 'payment_intent_not_found' } } };
+        }
+        if (!Object.values(paymentStatuses).includes(input.status)) {
+          await client.query('rollback');
+          return { error: { status: 400, body: { error: 'invalid_payment_status' } } };
+        }
+        if (!input.reason || typeof input.reason !== 'string') {
+          await client.query('rollback');
+          return { error: { status: 400, body: { error: 'repair_reason_required' } } };
+        }
+        if (
+          isTerminalPaymentStatus(paymentIntent.status) &&
+          paymentIntent.status !== input.status &&
+          input.force !== true
+        ) {
+          await client.query('rollback');
+          return {
+            error: {
+              status: 409,
+              body: {
+                error: 'terminal_payment_repair_requires_force',
+                currentStatus: paymentIntent.status,
+                requestedStatus: input.status
+              }
+            }
+          };
+        }
+
+        const eventId = input.eventId ?? `pevt_${randomUUID()}`;
+        const eventPayload = {
+          previousStatus: paymentIntent.status,
+          repairedBy: input.actor ?? 'admin',
+          reason: input.reason,
+          force: input.force === true,
+          metadata: input.metadata ?? {}
+        };
+        const eventResult = await client.query(
+          `insert into payment_events (id, payment_intent_id, provider, type, status, payload)
+           values ($1, $2, $3, $4, $5, $6::jsonb)
+           returning *`,
+          [
+            eventId,
+            paymentIntent.id,
+            paymentIntent.provider,
+            'admin.payment_status_repaired',
+            input.status,
+            jsonb(eventPayload)
+          ]
+        );
+        const updatedPaymentIntentResult = await client.query(
+          `update payment_intents
+           set status = $2, updated_at = now(),
+               completed_at = case when $3 then now() else completed_at end
+           where id = $1
+           returning *`,
+          [paymentIntent.id, input.status, isTerminalPaymentStatus(input.status)]
+        );
+        const updatedPaymentIntent = paymentIntentFromRow(updatedPaymentIntentResult.rows[0]);
+        await insertAuditEvent({
+          type: 'payment.intent_repaired',
+          severity: 'warn',
+          resourceType: 'payment_intent',
+          resourceId: updatedPaymentIntent.id,
+          payload: {
+            eventId,
+            previousStatus: paymentIntent.status,
+            status: input.status,
+            force: input.force === true,
+            reason: input.reason
+          }
+        }, client);
+        await client.query('commit');
+        return {
           event: paymentEventFromRow(eventResult.rows[0]),
           paymentIntent: updatedPaymentIntent
         };
