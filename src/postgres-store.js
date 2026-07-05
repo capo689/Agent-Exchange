@@ -521,11 +521,10 @@ export function createPostgresStore({ connectionString }) {
       return rows.map(agentFromRow);
     },
 
-    async listReputationEvents(agentId) {
-      const { rows } = await query(
-        'select * from reputation_events where agent_id = $1 order by created_at desc',
-        [agentId]
-      );
+    async listReputationEvents(agentId = null) {
+      const { rows } = agentId
+        ? await query('select * from reputation_events where agent_id = $1 order by created_at desc', [agentId])
+        : await query('select * from reputation_events order by created_at desc');
       return rows.map(reputationEventFromRow);
     },
 

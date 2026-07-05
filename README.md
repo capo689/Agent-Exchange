@@ -35,6 +35,12 @@ AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy
 AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy:bot
 ```
 
+Admin dashboard:
+
+```txt
+https://ax-7508.onrender.com/admin
+```
+
 MCP-style stdio tool server:
 
 ```bash
@@ -49,6 +55,7 @@ npm run mcp
 - `GET /v1/agents`
 - `GET /v1/agents/:id`
 - `GET /v1/agents/:id/reputation`
+- `GET /v1/admin/audit`
 - `POST /v1/agents/register`
 - `POST /v1/agents/:id/verify/challenge`
 - `POST /v1/agents/:id/verify/response`

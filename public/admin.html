@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Exchange Command</title>
+    <link rel="stylesheet" href="/admin/admin.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section id="gate" class="gate" aria-labelledby="gate-title">
+        <div>
+          <p class="eyebrow">Agent Exchange</p>
+          <h1 id="gate-title">Command Console</h1>
+        </div>
+        <form id="token-form" class="token-form">
+          <label for="admin-token">Admin token</label>
+          <div class="token-row">
+            <input id="admin-token" name="admin-token" type="password" autocomplete="off" spellcheck="false">
+            <button type="submit">Connect</button>
+          </div>
+          <p id="gate-error" class="form-error" role="alert"></p>
+        </form>
+      </section>
+
+      <section id="dashboard" class="dashboard hidden" aria-label="Agent Exchange live operations">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Agent Exchange</p>
+            <h1>Command Console</h1>
+          </div>
+          <div class="top-actions">
+            <div id="live-pill" class="live-pill"><span></span> Live</div>
+            <button id="refresh-button" type="button" title="Refresh">Refresh</button>
+            <button id="lock-button" type="button" title="Lock">Lock</button>
+          </div>
+        </header>
+
+        <section class="status-band" aria-label="Runtime status">
+          <div>
+            <span class="label">Backend</span>
+            <strong id="backend">-</strong>
+          </div>
+          <div>
+            <span class="label">Database</span>
+            <strong id="database">-</strong>
+          </div>
+          <div>
+            <span class="label">Admin</span>
+            <strong id="admin-state">-</strong>
+          </div>
+          <div>
+            <span class="label">Updated</span>
+            <strong id="updated-at">-</strong>
+          </div>
+        </section>
+
+        <section id="totals" class="metric-grid" aria-label="Marketplace totals"></section>
+
+        <section class="main-grid">
+          <section class="panel span-7">
+            <div class="panel-head">
+              <h2>Trade States</h2>
+              <span id="trade-total" class="subtle"></span>
+            </div>
+            <div id="trade-bars" class="bars"></div>
+          </section>
+
+          <section class="panel span-5">
+            <div class="panel-head">
+              <h2>Market Shape</h2>
+              <span class="subtle">Listings and offers</span>
+            </div>
+            <div id="market-bars" class="bars compact"></div>
+          </section>
+
+          <section class="panel span-8">
+            <div class="panel-head">
+              <h2>Recent Trades</h2>
+              <span class="subtle">Newest first</span>
+            </div>
+            <div id="trades-table" class="table"></div>
+          </section>
+
+          <section class="panel span-4">
+            <div class="panel-head">
+              <h2>Reputation</h2>
+              <span class="subtle">Score movement</span>
+            </div>
+            <div id="reputation-stream" class="event-stream"></div>
+          </section>
+
+          <section class="panel span-6">
+            <div class="panel-head">
+              <h2>Escrow Events</h2>
+              <span class="subtle">Stub adapter</span>
+            </div>
+            <div id="escrow-stream" class="event-stream"></div>
+          </section>
+
+          <section class="panel span-6">
+            <div class="panel-head">
+              <h2>Moderation</h2>
+              <span class="subtle">Policy signals</span>
+            </div>
+            <div id="moderation-stream" class="event-stream"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="/admin/admin.js"></script>
+  </body>
+</html>

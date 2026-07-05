@@ -389,9 +389,9 @@ export function createStore({ filePath } = {}) {
       return [...agents.values()];
     },
 
-    listReputationEvents(agentId) {
+    listReputationEvents(agentId = null) {
       return [...reputationEvents.values()]
-        .filter((event) => event.agentId === agentId)
+        .filter((event) => !agentId || event.agentId === agentId)
         .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
     },
 

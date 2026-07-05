@@ -12,6 +12,7 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 - Added single-resource lookup endpoints and SDK helpers for listings, offers, and trades.
 - Added `limit`/`offset` pagination and allow-listed filters for listing, offer, and trade list endpoints.
 - Added deterministic reputation events and agent score updates for captured, refunded, and disputed trade outcomes.
+- Added the admin command dashboard at `/admin` and the protected `GET /v1/admin/audit` operations feed.
 
 ## 2026-07-04
 

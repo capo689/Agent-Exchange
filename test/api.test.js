@@ -26,6 +26,9 @@ function createClient() {
     get(pathname, query = {}) {
       return handleApiRequest({ method: 'GET', pathname, query }, store);
     },
+    getWithHeaders(pathname, headers = {}, query = {}) {
+      return handleApiRequest({ method: 'GET', pathname, query, headers }, store);
+    },
     post(pathname, body, headers = {}) {
       return handleApiRequest({ method: 'POST', pathname, body, headers: inferHeaders(body, headers) }, store);
     },
@@ -689,6 +692,15 @@ test('completed trades create auditable reputation events and update scores', as
   assert.equal(buyerReputation.body.reputationEvents[0].role, 'buyer');
   assert.equal(missing.status, 404);
   assert.equal(missing.body.error, 'agent_not_found');
+
+  const forbiddenAudit = await client.getWithHeaders('/v1/admin/audit', {});
+  const audit = await client.getWithHeaders('/v1/admin/audit', { 'x-admin-token': 'test-admin-token' });
+
+  assert.equal(forbiddenAudit.status, 403);
+  assert.equal(audit.status, 200);
+  assert.equal(audit.body.totals.reputationEvents, 2);
+  assert.equal(audit.body.breakdowns.tradesByState.CAPTURED, 1);
+  assert.equal(audit.body.recent.reputationEvents.length, 2);
 });
 
 test('refund outcomes reduce seller reputation and clamp scores', async () => {
@@ -1080,6 +1092,37 @@ test('http server rate limits repeated auth requests before route handling', asy
   assert.equal(second.body.error, 'rate_limited');
   assert.equal(second.headers['x-ratelimit-limit'], '1');
   assert.equal(second.headers['retry-after'], '60');
+});
+
+test('http server serves the admin dashboard shell', async () => {
+  const server = createApp({ store: createStore() });
+  const req = Readable.from([]);
+  req.method = 'GET';
+  req.url = '/admin';
+  req.headers = {};
+
+  let statusCode = null;
+  let headers = {};
+  let payload = '';
+  const res = new Writable({
+    write(chunk, _encoding, callback) {
+      payload += chunk.toString();
+      callback();
+    }
+  });
+  res.writeHead = (status, writtenHeaders = {}) => {
+    statusCode = status;
+    headers = writtenHeaders;
+  };
+
+  await new Promise((resolve) => {
+    res.on('finish', resolve);
+    server.emit('request', req, res);
+  });
+
+  assert.equal(statusCode, 200);
+  assert.equal(headers['content-type'], 'text/html; charset=utf-8');
+  assert.match(payload, /Command Console/);
 });
 
 test('cleanup maintenance is admin-only and removes used challenges', async () => {

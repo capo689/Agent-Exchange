@@ -50,6 +50,14 @@ AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run smoke:deploy
 
 This checks `/v1/health`, confirms the Postgres backend is active, verifies `/v1/agents` can read from the database, and optionally runs the full buyer/seller reference trade.
 
+Hosted command dashboard:
+
+```txt
+https://YOUR_RENDER_SERVICE.onrender.com/admin
+```
+
+The dashboard prompts for `ADMIN_TOKEN` and calls `GET /v1/admin/audit` with `x-admin-token`.
+
 ## Exercise Reference Flow
 
 With the API running:

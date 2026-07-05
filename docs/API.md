@@ -24,6 +24,12 @@ x-admin-token: <ADMIN_TOKEN>
 
 Returns service status.
 
+## `GET /v1/admin/audit`
+
+Requires `x-admin-token`.
+
+Returns the live dashboard payload: runtime status, marketplace totals, listing/offer/trade breakdowns, recent trades, reputation events, escrow events, and moderation events.
+
 ## `GET /v1/policy`
 
 Returns the ban list, severe-abuse categories, and assurance tiers.

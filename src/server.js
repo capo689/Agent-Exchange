@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { URL } from 'node:url';
 import { getConfig, getSafeRuntimeStatus } from './config.js';
 import { verifyEd25519Signature } from './crypto.js';
@@ -17,6 +18,13 @@ const defaultStore = runtimeConfig.databaseUrl
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
 
+const adminAssets = Object.freeze({
+  '/admin': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
+  '/admin/': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
+  '/admin/admin.css': { path: '../public/admin.css', type: 'text/css; charset=utf-8' },
+  '/admin/admin.js': { path: '../public/admin.js', type: 'application/javascript; charset=utf-8' }
+});
+
 function json(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
@@ -26,6 +34,20 @@ function json(res, status, payload, extraHeaders = {}) {
     ...extraHeaders
   });
   res.end(body);
+}
+
+async function serveAdminAsset(pathname, res) {
+  const asset = adminAssets[pathname];
+  if (!asset) return false;
+
+  const body = await readFile(new URL(asset.path, import.meta.url));
+  res.writeHead(200, {
+    'content-type': asset.type,
+    'cache-control': 'no-store',
+    'content-length': body.length
+  });
+  res.end(body);
+  return true;
 }
 
 async function readJson(req) {
@@ -211,6 +233,20 @@ function paginatedBody(key, items, filters) {
       returned: items.length
     }
   };
+}
+
+function countBy(items, field) {
+  return items.reduce((counts, item) => {
+    const key = String(item[field] ?? 'unknown');
+    counts[key] = (counts[key] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function recent(items, limit = 12) {
+  return [...items]
+    .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
+    .slice(0, limit);
 }
 
 function getHeader(headers, name) {
@@ -512,6 +548,51 @@ export async function handleApiRequest(
 
   if (method === 'GET' && pathname === '/v1/agents') {
     return { status: 200, body: { agents: await store.listAgents() } };
+  }
+
+  if (method === 'GET' && pathname === '/v1/admin/audit') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+
+    const dashboardLimit = 10000;
+    const [agents, listings, offers, trades, escrowEvents, moderationEvents, reputationEvents] = await Promise.all([
+      store.listAgents(),
+      store.listListings({ limit: dashboardLimit, offset: 0 }),
+      store.listOffers({ limit: dashboardLimit, offset: 0 }),
+      store.listTrades({ limit: dashboardLimit, offset: 0 }),
+      store.listEscrowEvents(),
+      store.listModerationEvents(),
+      store.listReputationEvents()
+    ]);
+
+    return {
+      status: 200,
+      body: {
+        generatedAt: new Date().toISOString(),
+        runtime: getSafeRuntimeStatus(),
+        totals: {
+          agents: agents.length,
+          listings: listings.length,
+          offers: offers.length,
+          trades: trades.length,
+          escrowEvents: escrowEvents.length,
+          moderationEvents: moderationEvents.length,
+          reputationEvents: reputationEvents.length
+        },
+        breakdowns: {
+          listingsByStatus: countBy(listings, 'status'),
+          listingsByAssuranceTier: countBy(listings, 'assuranceTier'),
+          offersByStatus: countBy(offers, 'status'),
+          tradesByState: countBy(trades, 'state')
+        },
+        recent: {
+          trades: recent(trades),
+          reputationEvents: recent(reputationEvents),
+          escrowEvents: recent(escrowEvents),
+          moderationEvents: recent(moderationEvents)
+        }
+      }
+    };
   }
 
   const agentReputationMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/reputation$/);
@@ -1004,6 +1085,17 @@ export function createApp({
     const startedAt = performance.now();
     try {
       const url = new URL(req.url, 'http://localhost');
+      if (req.method === 'GET' && await serveAdminAsset(url.pathname, res)) {
+        logInfo('http.request', {
+          requestId,
+          method: req.method,
+          path: url.pathname,
+          status: 200,
+          latencyMs: Math.round((performance.now() - startedAt) * 100) / 100
+        });
+        return;
+      }
+
       const rateLimit = rateLimiter.check(req, url.pathname);
       if (!rateLimit.allowed) {
         logWarn('http.rate_limited', {
