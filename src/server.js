@@ -2,6 +2,7 @@ import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { URL } from 'node:url';
+import { encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
 import { getConfig, getSafeRuntimeStatus } from './config.js';
 import { verifyEd25519Signature } from './crypto.js';
 import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
@@ -292,7 +293,12 @@ async function safeRecordAudit(store, input) {
 }
 
 function getHeader(headers, name) {
-  return headers?.[name.toLowerCase()] ?? headers?.[name] ?? null;
+  if (!headers) return null;
+  const direct = headers[name.toLowerCase()] ?? headers[name];
+  if (direct != null) return direct;
+  const target = name.toLowerCase();
+  const match = Object.entries(headers).find(([key]) => key.toLowerCase() === target);
+  return match ? match[1] : null;
 }
 
 function idempotencyKey(headers, body) {
@@ -502,6 +508,28 @@ function x402RequirementsForAmount(amountUsdc) {
       }
     };
   }
+}
+
+function x402ResourceUrl(pathname) {
+  const baseUrl = (
+    process.env.AGENT_EXCHANGE_PUBLIC_URL ??
+    process.env.AGENT_EXCHANGE_URL ??
+    'https://ax-7508.onrender.com'
+  ).replace(/\/$/, '');
+  return `${baseUrl}${pathname}`;
+}
+
+function x402PaymentRequiredForProbe(paymentRequirements) {
+  return {
+    x402Version: 2,
+    resource: {
+      url: x402ResourceUrl('/v1/payments/x402/probe'),
+      description: 'Agent Exchange x402 hosted settlement probe',
+      mimeType: 'application/json',
+      serviceName: 'Agent Exchange'
+    },
+    accepts: [paymentRequirements]
+  };
 }
 
 export async function handleApiRequest(
@@ -789,6 +817,71 @@ export async function handleApiRequest(
       body: {
         provider: 'x402',
         paymentRequirements: result.paymentRequirements
+      }
+    };
+  }
+
+  if (method === 'GET' && pathname === '/v1/payments/x402/probe') {
+    const amountUsdc = queryValue(query, 'amountUsdc') ?? '0.01';
+    const requirements = x402RequirementsForAmount(amountUsdc);
+    if (requirements.error) return requirements.error;
+    const paymentRequired = x402PaymentRequiredForProbe(requirements.paymentRequirements);
+    const paymentPayload =
+      parseX402PaymentPayload(getHeader(headers, 'payment-signature')) ??
+      parseX402PaymentPayload(getHeader(headers, 'x-payment'));
+
+    if (!paymentPayload) {
+      return {
+        status: 402,
+        headers: {
+          'PAYMENT-REQUIRED': encodePaymentRequiredHeader(paymentRequired)
+        },
+        body: {
+          ...paymentRequired,
+          error: 'x402_payment_required'
+        }
+      };
+    }
+
+    const result = await settleX402Payment({
+      paymentPayload,
+      paymentRequirements: requirements.paymentRequirements,
+      x402: requirements.x402
+    });
+
+    if (!result.ok) {
+      return {
+        status: result.status,
+        headers: {
+          'PAYMENT-REQUIRED': encodePaymentRequiredHeader({
+            ...paymentRequired,
+            error: result.error
+          })
+        },
+        body: {
+          error: result.error,
+          paymentRequired,
+          verify: result.verify ?? null,
+          settle: result.settle ?? null
+        }
+      };
+    }
+
+    return {
+      status: 200,
+      headers: {
+        'PAYMENT-RESPONSE': encodePaymentResponseHeader(result.settle)
+      },
+      body: {
+        ok: true,
+        provider: 'x402',
+        settlement: {
+          payer: result.payer,
+          transaction: result.transaction,
+          network: result.network,
+          amount: result.amount
+        },
+        message: 'x402 probe payment settled'
       }
     };
   }
@@ -1593,7 +1686,7 @@ export function createApp({
           }
         });
       }
-      return json(res, result.status, result.body, rateLimit.headers);
+      return json(res, result.status, result.body, { ...rateLimit.headers, ...(result.headers ?? {}) });
     } catch (error) {
       const status = error.code === 'REQUEST_BODY_TOO_LARGE'
         ? 413

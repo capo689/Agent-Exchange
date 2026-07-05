@@ -109,7 +109,11 @@ export function parseX402PaymentPayload(value) {
     try {
       return JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
     } catch {
-      return null;
+      try {
+        return JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+      } catch {
+        return null;
+      }
     }
   }
 }

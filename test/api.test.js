@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
+import {
+  decodePaymentRequiredHeader,
+  decodePaymentResponseHeader,
+  encodePaymentSignatureHeader
+} from '@x402/core/http';
 import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
 import { createRateLimiter } from '../src/rate-limit.js';
 import { createApp, handleApiRequest } from '../src/server.js';
@@ -339,6 +344,80 @@ test('admin x402 settlement test verifies then settles through configured facili
     else process.env.X402_FACILITATOR_URL = previousEnv.facilitatorUrl;
     if (previousEnv.token === undefined) delete process.env.X402_FACILITATOR_BEARER_TOKEN;
     else process.env.X402_FACILITATOR_BEARER_TOKEN = previousEnv.token;
+  }
+});
+
+test('x402 probe returns payment challenge headers and settles a supplied payment header', async () => {
+  const previousEnv = {
+    payTo: process.env.X402_PAY_TO,
+    facilitatorUrl: process.env.X402_FACILITATOR_URL
+  };
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  process.env.X402_PAY_TO = '0x122F8Fcaf2152420445Aa424E1D8C0306935B5c9';
+  process.env.X402_FACILITATOR_URL = 'https://facilitator.test/x402';
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    const payload = url.endsWith('/verify')
+      ? { isValid: true, payer: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e', extra: {} }
+      : {
+          success: true,
+          payer: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e',
+          transaction: '0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9',
+          network: 'eip155:84532',
+          amount: '10000',
+          extra: {}
+        };
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  try {
+    const client = createClient();
+    const unpaid = await client.get('/v1/payments/x402/probe', { amountUsdc: '0.01' });
+    const required = decodePaymentRequiredHeader(unpaid.headers['PAYMENT-REQUIRED']);
+    const paymentPayload = {
+      x402Version: 2,
+      resource: required.resource,
+      accepted: required.accepts[0],
+      payload: {
+        signature: '0xsig',
+        authorization: {
+          from: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e',
+          to: process.env.X402_PAY_TO,
+          value: '10000',
+          validAfter: '0',
+          validBefore: '9999999999',
+          nonce: '0xnonce'
+        }
+      }
+    };
+    const paid = await client.getWithHeaders(
+      '/v1/payments/x402/probe',
+      { 'X-PAYMENT': encodePaymentSignatureHeader(paymentPayload) },
+      { amountUsdc: '0.01' }
+    );
+
+    assert.equal(unpaid.status, 402);
+    assert.equal(required.x402Version, 2);
+    assert.equal(required.accepts[0].amount, '10000');
+    assert.equal(paid.status, 200);
+    assert.ok(paid.headers['PAYMENT-RESPONSE'], JSON.stringify(paid));
+    const paymentResponse = decodePaymentResponseHeader(paid.headers['PAYMENT-RESPONSE']);
+    assert.equal(paid.body.ok, true);
+    assert.equal(paymentResponse.transaction, '0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9');
+    assert.deepEqual(calls.map((call) => call.url), [
+      'https://facilitator.test/x402/verify',
+      'https://facilitator.test/x402/settle'
+    ]);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousEnv.payTo === undefined) delete process.env.X402_PAY_TO;
+    else process.env.X402_PAY_TO = previousEnv.payTo;
+    if (previousEnv.facilitatorUrl === undefined) delete process.env.X402_FACILITATOR_URL;
+    else process.env.X402_FACILITATOR_URL = previousEnv.facilitatorUrl;
   }
 });
 

@@ -194,3 +194,21 @@ Expected behavior:
 - Missing `X402_PAY_TO` returns `503 x402_not_configured`.
 - Invalid payment payload returns `402 x402_payment_required` or `402 x402_payment_verification_failed`.
 - Valid payload calls facilitator `/verify`, then `/settle`, and returns payer, transaction, network, and amount.
+
+Hosted paid probe:
+
+```bash
+curl -i -sS 'https://YOUR_RENDER_SERVICE.onrender.com/v1/payments/x402/probe?amountUsdc=0.01'
+```
+
+Expected unpaid response: HTTP `402` with a `PAYMENT-REQUIRED` header.
+
+Local buyer-side probe:
+
+```bash
+export AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com
+export EVM_PRIVATE_KEY=0x_throwaway_base_sepolia_buyer_private_key
+npm run x402:probe
+```
+
+`EVM_PRIVATE_KEY` must be a throwaway local test wallet funded with Base Sepolia test USDC and ETH. Do not put buyer private keys in Render or docs.

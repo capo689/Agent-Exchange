@@ -352,6 +352,10 @@ Admin-only. Requires `x-admin-token`. Body:
 
 The route calls the configured facilitator `/verify` endpoint and then `/settle`. It returns the payer, transaction, network, and amount when settlement succeeds.
 
+- `GET /v1/payments/x402/probe?amountUsdc=0.01`
+
+Hosted x402 paid probe. Without a payment header, it returns `402` with a `PAYMENT-REQUIRED` header. With a valid `X-PAYMENT` or `PAYMENT-SIGNATURE` header, it calls facilitator `/verify`, then `/settle`, and returns a `PAYMENT-RESPONSE` header plus a JSON settlement body.
+
 ## Maintenance
 
 `POST /v1/maintenance/cleanup` removes expired/used local challenges, expired sessions, and idempotency records older than 24 hours. It requires the `x-admin-token` header.
