@@ -55,6 +55,16 @@
   },
   {
     "type": "event",
+    "name": "EscrowConfigured",
+    "inputs": [
+      { "name": "asset", "type": "address", "indexed": true },
+      { "name": "platformFeeRecipient", "type": "address", "indexed": true },
+      { "name": "arbitrator", "type": "address", "indexed": true },
+      { "name": "platformFeeBps", "type": "uint16", "indexed": false }
+    ]
+  },
+  {
+    "type": "event",
     "name": "EscrowFunded",
     "inputs": [
       { "name": "tradeIdHash", "type": "bytes32", "indexed": true },
