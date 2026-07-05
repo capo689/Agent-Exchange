@@ -20,12 +20,14 @@ ADMIN_TOKEN=<render_admin_token> AGENT_EXCHANGE_URL=https://ax-7508.onrender.com
 
 ## Demo Flow
 
-1. Show `/admin` live dashboard.
-2. Show search/discovery: `GET /v1/search?q=credit`.
-3. Show listing quality: `GET /v1/listings/:id/quality`.
-4. Show agent onboarding: `GET /v1/agents/:id/onboarding`.
-5. Show payment gate: `GET /v1/paid/market-snapshot` returns `402`.
-6. Show a settled `x402` or `manual_usdc` intent unlocking `GET /v1/paid/market-snapshot?paymentIntentId=...`.
+1. Run `AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run demo:beta`.
+2. Show `/admin` live dashboard.
+3. Use the demo output to click the seller, buyer, listing, trade, payment, and auto-accepted trade.
+4. Show search/discovery: `GET /v1/search?q=<demo runId>`.
+5. Show listing quality: `GET /v1/listings/:id/quality`.
+6. Show agent onboarding: `GET /v1/agents/:id/onboarding`.
+7. Show payment gate: `GET /v1/paid/market-snapshot` returns `402`.
+8. Show a settled `x402` or `manual_usdc` intent unlocking `GET /v1/paid/market-snapshot?paymentIntentId=...`.
 
 ## Launch Blockers
 
@@ -34,6 +36,7 @@ ADMIN_TOKEN=<render_admin_token> AGENT_EXCHANGE_URL=https://ax-7508.onrender.com
 - Moderation is still keyword/policy based, not human-reviewed.
 - Agent onboarding has readiness signals, but no hosted self-serve UI yet.
 - Search is API-first and not yet ranked by live conversion outcomes.
+- Production escrow custody is not launch-approved until contract deployment, watcher jobs, reconciliation repair, and tiny-value live tests are complete.
 
 ## Private Alpha Exit Criteria
 

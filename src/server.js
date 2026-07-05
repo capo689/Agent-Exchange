@@ -1175,7 +1175,7 @@ export async function handleApiRequest(
     ]);
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     const results = listings
-      .filter((listing) => ['active', 'open'].includes(listing.status))
+      .filter((listing) => listingAcceptsNewTrades(listing))
       .filter((listing) => !category || listing.category === category)
       .filter((listing) => !assuranceTier || String(listing.assuranceTier) === String(assuranceTier))
       .map((listing) => {

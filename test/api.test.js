@@ -1534,6 +1534,22 @@ test('search, listing quality, and agent onboarding expose launch readiness sign
   assert.equal(search.body.results[0].listing.id, created.body.listing.id);
   assert.ok(search.body.results[0].quality.score >= 80);
 
+  const buyer = await registerBasicAgent(client, 'search_partial_buyer');
+  const fungible = await createFungibleListing(client, seller, {
+    title: 'Partially filled searchable compute credits',
+    totalQuantity: 1000,
+    maxFillQuantity: 1000
+  });
+  await client.post('/v1/trades', {
+    listingId: fungible.id,
+    buyerAgentId: buyer.id,
+    quantity: 100,
+    assuranceAcknowledgement: true
+  });
+  const partialSearch = await client.get('/v1/search', { q: 'searchable compute' });
+  assert.equal(partialSearch.status, 200);
+  assert.ok(partialSearch.body.results.some((result) => result.listing.id === fungible.id));
+
   const quality = await client.get(`/v1/listings/${created.body.listing.id}/quality`);
   assert.equal(quality.status, 200);
   assert.ok(quality.body.quality.checks.some((check) => check.key === 'policyScreened' && check.passed));
@@ -1541,7 +1557,7 @@ test('search, listing quality, and agent onboarding expose launch readiness sign
   const onboarding = await client.getWithHeaders(`/v1/agents/${seller.id}/onboarding`, seller.authHeaders);
   assert.equal(onboarding.status, 200);
   assert.equal(onboarding.body.onboarding.ready, true);
-  assert.equal(onboarding.body.onboarding.activeListings, 1);
+  assert.equal(onboarding.body.onboarding.activeListings, 2);
 });
 
 test('list endpoints support allow-listed filters and pagination', async () => {
