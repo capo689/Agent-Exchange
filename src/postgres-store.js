@@ -21,6 +21,10 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function jsonb(value) {
+  return JSON.stringify(value);
+}
+
 function iso(value) {
   return value instanceof Date ? value.toISOString() : value;
 }
@@ -223,9 +227,9 @@ export function createPostgresStore({ connectionString }) {
     const executor = client ?? pool;
     const { rows } = await executor.query(
       `insert into offer_events (id, offer_id, type, actor_agent_id, payload)
-       values ($1, $2, $3, $4, $5)
+       values ($1, $2, $3, $4, $5::jsonb)
        returning *`,
-      [`ofe_${randomUUID()}`, offerId, type, actorAgentId, payload]
+      [`ofe_${randomUUID()}`, offerId, type, actorAgentId, jsonb(payload)]
     );
     return rows[0];
   }
@@ -283,7 +287,7 @@ export function createPostgresStore({ connectionString }) {
       `insert into trades (
         id, listing_id, offer_id, reservation_id, buyer_agent_id, seller_agent_id,
         assurance_tier, buyer_acknowledged_assurance, state, price_usdc, quantity, unit, events
-      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
       returning *`,
       [
         trade.id,
@@ -298,7 +302,7 @@ export function createPostgresStore({ connectionString }) {
         trade.priceUsdc,
         trade.quantity,
         trade.unit,
-        trade.events
+        jsonb(trade.events)
       ]
     );
     return tradeFromRow(rows[0]);
@@ -410,14 +414,14 @@ export function createPostgresStore({ connectionString }) {
         `insert into agents (
           id, developer_id, name, wallet_address, public_key_jwk,
           reputation_score, verification_tier, status
-        ) values ($1, $2, $3, $4, $5, $6, $7, $8)
+        ) values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
         returning *`,
         [
           `agt_${randomUUID()}`,
           input.developerId,
           input.name,
           input.walletAddress ?? null,
-          input.publicKeyJwk ?? null,
+          input.publicKeyJwk ? jsonb(input.publicKeyJwk) : null,
           Number(input.reputationScore ?? 0),
           input.publicKeyJwk ? 2 : 0,
           'active'
@@ -549,7 +553,7 @@ export function createPostgresStore({ connectionString }) {
             total_quantity, available_quantity, unit, min_fill_quantity, max_fill_quantity,
             metadata, status, screening
           ) values (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19::jsonb
           ) returning *`,
           [
             listingId,
@@ -568,9 +572,9 @@ export function createPostgresStore({ connectionString }) {
             inventory.unit,
             inventory.minFillQuantity,
             inventory.maxFillQuantity,
-            input.metadata ?? {},
+            jsonb(input.metadata ?? {}),
             'active',
-            screening
+            jsonb(screening)
           ]
         );
         await client.query(
@@ -591,18 +595,18 @@ export function createPostgresStore({ connectionString }) {
     async recordBlockedListingAttempt(input, screening) {
       const { rows } = await query(
         `insert into moderation_events (id, type, reportable, input, matches)
-         values ($1, $2, $3, $4, $5)
+         values ($1, $2, $3, $4::jsonb, $5::jsonb)
          returning *`,
         [
           `mod_${randomUUID()}`,
           'blocked_listing_attempt',
           screening.reportable,
-          {
+          jsonb({
             sellerAgentId: input.sellerAgentId,
             category: input.category,
             assuranceTier: input.assuranceTier
-          },
-          screening.matches
+          }),
+          jsonb(screening.matches)
         ]
       );
       return rows[0];
@@ -611,9 +615,9 @@ export function createPostgresStore({ connectionString }) {
     async saveIdempotencyRecord(key, fingerprint, response) {
       const { rows } = await query(
         `insert into idempotency_records (key, fingerprint, response)
-         values ($1, $2, $3)
+         values ($1, $2, $3::jsonb)
          returning *`,
-        [key, fingerprint, response]
+        [key, fingerprint, jsonb(response)]
       );
       return rows[0];
     },
@@ -675,7 +679,7 @@ export function createPostgresStore({ connectionString }) {
           `insert into trades (
             id, listing_id, offer_id, reservation_id, buyer_agent_id, seller_agent_id,
             assurance_tier, buyer_acknowledged_assurance, state, price_usdc, quantity, unit, events
-          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
           returning *`,
           [
             `trd_${randomUUID()}`,
@@ -690,7 +694,7 @@ export function createPostgresStore({ connectionString }) {
             totalPriceUsdc,
             quantity,
             listing.unit ?? 'item',
-            events
+            jsonb(events)
           ]
         );
         await client.query('commit');
@@ -717,7 +721,7 @@ export function createPostgresStore({ connectionString }) {
             id, listing_id, buyer_agent_id, seller_agent_id, parent_offer_id, root_offer_id,
             created_by_agent_id, status, unit_price_usdc, total_price_usdc, quantity, terms,
             assurance_acknowledgement, expires_at
-          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)
           returning *`,
           [
             offerId,
@@ -731,7 +735,7 @@ export function createPostgresStore({ connectionString }) {
             unitPriceUsdc,
             totalPriceUsdc,
             quantity,
-            input.terms ?? {},
+            jsonb(input.terms ?? {}),
             Boolean(input.assuranceAcknowledgement),
             input.expiresAt
           ]
@@ -952,10 +956,10 @@ export function createPostgresStore({ connectionString }) {
       const events = [...trade.events, event];
       const { rows } = await query(
         `update trades
-         set state = $2, events = $3, updated_at = now()
+         set state = $2, events = $3::jsonb, updated_at = now()
          where id = $1
          returning *`,
-        [tradeId, transition.to, events]
+        [tradeId, transition.to, jsonb(events)]
       );
       return tradeFromRow(rows[0]);
     },
@@ -963,9 +967,9 @@ export function createPostgresStore({ connectionString }) {
     async createEscrowEvent({ tradeId, type, amountUsdc, actor, payload = {} }) {
       const { rows } = await query(
         `insert into escrow_events (id, trade_id, type, amount_usdc, actor, adapter, payload)
-         values ($1, $2, $3, $4, $5, $6, $7)
+         values ($1, $2, $3, $4, $5, $6, $7::jsonb)
          returning *`,
-        [`esc_${randomUUID()}`, tradeId, type, amountUsdc, actor, 'stub', payload]
+        [`esc_${randomUUID()}`, tradeId, type, amountUsdc, actor, 'stub', jsonb(payload)]
       );
       return escrowEventFromRow(rows[0]);
     },
