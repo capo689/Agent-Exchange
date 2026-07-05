@@ -11,7 +11,7 @@
     "smoke:deploy:bot": "node scripts/smoke-deploy.js --bot",
     "test:visual:dashboard": "node scripts/visual-dashboard-check.mjs",
     "start": "node src/server.js",
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=24"
