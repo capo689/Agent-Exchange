@@ -2,6 +2,7 @@ import { chromium } from 'playwright';
 
 const baseUrl = process.env.AGENT_EXCHANGE_URL ?? 'http://localhost:8787';
 const outputDir = process.env.VISUAL_OUTPUT_DIR ?? '/private/tmp';
+const adminToken = process.env.ADMIN_TOKEN ?? 'test-admin-token';
 
 const sampleAudit = {
   generatedAt: new Date().toISOString(),
@@ -71,6 +72,23 @@ const sampleAudit = {
   }
 };
 
+const sampleReconciliation = {
+  reconciliation: {
+    generatedAt: new Date().toISOString(),
+    ok: true,
+    counts: {
+      paymentIntents: 154,
+      paymentEvents: 24,
+      escrowEvents: 154,
+      trades: 76,
+      findings: 0,
+      errors: 0,
+      warnings: 0
+    },
+    findings: []
+  }
+};
+
 async function renderDashboard(page) {
   await page.route('**/v1/admin/audit', async (route) => {
     await route.fulfill({
@@ -79,8 +97,15 @@ async function renderDashboard(page) {
       body: JSON.stringify(sampleAudit)
     });
   });
+  await page.route('**/v1/admin/reconciliation', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(sampleReconciliation)
+    });
+  });
   await page.goto(`${baseUrl}/admin`, { waitUntil: 'networkidle' });
-  await page.locator('#admin-token').fill('test-admin');
+  await page.locator('#admin-token').fill(adminToken);
   await page.locator('button[type="submit"]').click();
   await page.locator('#dashboard:not(.hidden)').waitFor({ timeout: 5000 });
 }

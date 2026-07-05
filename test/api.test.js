@@ -1090,7 +1090,10 @@ test('stale trade transition recheck prevents split escrow writes', async () => 
     actorAgentId: seller.id
   });
 
-  const tradeBeforeRace = (await client.get(`/v1/trades/${offered.body.trade.id}`)).body.trade;
+  const tradeBeforeRace = (await client.getWithHeaders(
+    `/v1/trades/${offered.body.trade.id}`,
+    buyer.authHeaders
+  )).body.trade;
   const confirm = getTransition('confirm');
   const refund = getTransition('refund');
   const confirmed = client.store.transitionTrade(tradeBeforeRace.id, {
@@ -1136,7 +1139,7 @@ test('sandbox payment decline leaves trade state unchanged and skips escrow even
     actorAgentId: seller.id,
     sandboxPaymentOutcome: 'declined'
   });
-  const fetchedTrade = await client.get(`/v1/trades/${offered.body.trade.id}`);
+  const fetchedTrade = await client.getWithHeaders(`/v1/trades/${offered.body.trade.id}`, buyer.authHeaders);
   const payments = await client.adminGet('/v1/admin/payments', { status: 'DECLINED' });
   const escrowEvents = await client.store.listEscrowEvents();
 
@@ -1334,7 +1337,7 @@ test('buyer can make best offer and seller can counter', async () => {
     assuranceAcknowledgement: true,
     expiresAt: futureIso()
   });
-  const fetchedOffer = await client.get(`/v1/offers/${offer.body.offer.id}`);
+  const fetchedOffer = await client.getWithHeaders(`/v1/offers/${offer.body.offer.id}`, buyer.authHeaders);
 
   assert.equal(fetchedListing.status, 200);
   assert.equal(fetchedListing.body.listing.id, listing.id);
@@ -1362,8 +1365,8 @@ test('single-resource lookup endpoints return 404 for missing ids', async () => 
   const client = createClient();
 
   const listing = await client.get('/v1/listings/lst_missing');
-  const offer = await client.get('/v1/offers/off_missing');
-  const trade = await client.get('/v1/trades/trd_missing');
+  const offer = await client.adminGet('/v1/offers/off_missing');
+  const trade = await client.adminGet('/v1/trades/trd_missing');
 
   assert.equal(listing.status, 404);
   assert.equal(listing.body.error, 'listing_not_found');
@@ -1396,7 +1399,7 @@ test('search, listing quality, and agent onboarding expose launch readiness sign
   assert.equal(quality.status, 200);
   assert.ok(quality.body.quality.checks.some((check) => check.key === 'policyScreened' && check.passed));
 
-  const onboarding = await client.get(`/v1/agents/${seller.id}/onboarding`);
+  const onboarding = await client.getWithHeaders(`/v1/agents/${seller.id}/onboarding`, seller.authHeaders);
   assert.equal(onboarding.status, 200);
   assert.equal(onboarding.body.onboarding.ready, true);
   assert.equal(onboarding.body.onboarding.activeListings, 1);
@@ -1433,7 +1436,7 @@ test('list endpoints support allow-listed filters and pagination', async () => {
     assuranceAcknowledgement: true,
     expiresAt: futureIso()
   });
-  const filteredOffers = await client.get('/v1/offers', {
+  const filteredOffers = await client.getWithHeaders('/v1/offers', otherBuyer.authHeaders, {
     buyerAgentId: otherBuyer.id,
     limit: '5',
     offset: '0'
@@ -1441,7 +1444,7 @@ test('list endpoints support allow-listed filters and pagination', async () => {
   const accepted = await client.post(`/v1/offers/${firstOffer.body.offer.id}/accept`, {
     actorAgentId: seller.id
   });
-  const filteredTrades = await client.get('/v1/trades', {
+  const filteredTrades = await client.getWithHeaders('/v1/trades', buyer.authHeaders, {
     buyerAgentId: buyer.id,
     state: 'OFFER_MADE',
     limit: '5'
@@ -1460,6 +1463,53 @@ test('list endpoints support allow-listed filters and pagination', async () => {
   assert.equal(filteredTrades.body.trades.some((trade) => trade.id === accepted.body.trade.id), true);
   assert.equal(invalidQuery.status, 400);
   assert.equal(invalidQuery.body.error, 'invalid_query');
+});
+
+test('private read endpoints are scoped to parties or admin', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const outsider = await registerBasicAgent(client, 'read_scope_outsider');
+  const listing = await createFungibleListing(client, seller);
+  const offer = await client.post('/v1/offers', {
+    listingId: listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 1000,
+    unitPriceUsdc: '0.010',
+    assuranceAcknowledgement: true,
+    expiresAt: futureIso()
+  });
+  const accepted = await client.post(`/v1/offers/${offer.body.offer.id}/accept`, {
+    actorAgentId: seller.id
+  });
+  await client.post(`/v1/trades/${accepted.body.trade.id}/accept`, {
+    actorAgentId: seller.id
+  });
+
+  const anonymousAgents = await client.get('/v1/agents');
+  const ownAgents = await client.getWithHeaders('/v1/agents', buyer.authHeaders);
+  const adminAgents = await client.adminGet('/v1/agents');
+  const anonymousOffer = await client.get(`/v1/offers/${offer.body.offer.id}`);
+  const outsiderOffer = await client.getWithHeaders(`/v1/offers/${offer.body.offer.id}`, outsider.authHeaders);
+  const buyerOffer = await client.getWithHeaders(`/v1/offers/${offer.body.offer.id}`, buyer.authHeaders);
+  const anonymousTrade = await client.get(`/v1/trades/${accepted.body.trade.id}`);
+  const sellerTrades = await client.getWithHeaders('/v1/trades', seller.authHeaders);
+  const anonymousEscrow = await client.get('/v1/escrow/events');
+  const buyerEscrow = await client.getWithHeaders('/v1/escrow/events', buyer.authHeaders);
+
+  assert.equal(anonymousAgents.status, 401);
+  assert.equal(ownAgents.status, 200);
+  assert.deepEqual(ownAgents.body.agents.map((agent) => agent.id), [buyer.id]);
+  assert.equal(adminAgents.status, 200);
+  assert.equal(adminAgents.body.agents.length >= 3, true);
+  assert.equal(anonymousOffer.status, 401);
+  assert.equal(outsiderOffer.status, 403);
+  assert.equal(buyerOffer.status, 200);
+  assert.equal(anonymousTrade.status, 401);
+  assert.equal(sellerTrades.status, 200);
+  assert.equal(sellerTrades.body.trades.some((trade) => trade.id === accepted.body.trade.id), true);
+  assert.equal(anonymousEscrow.status, 401);
+  assert.equal(buyerEscrow.status, 200);
+  assert.equal(buyerEscrow.body.escrowEvents.some((event) => event.tradeId === accepted.body.trade.id), true);
 });
 
 test('accepting a counteroffer creates reservation and trade with partial fill', async () => {
@@ -1487,9 +1537,9 @@ test('accepting a counteroffer creates reservation and trade with partial fill',
     { actorAgentId: buyer.id },
     { 'idempotency-key': 'accept-counter-1' }
   );
-  const reservations = await client.get('/v1/inventory/reservations');
+  const reservations = await client.getWithHeaders('/v1/inventory/reservations', buyer.authHeaders);
   const market = await client.get(`/v1/listings/${listing.id}/market`);
-  const fetchedTrade = await client.get(`/v1/trades/${accepted.body.trade.id}`);
+  const fetchedTrade = await client.getWithHeaders(`/v1/trades/${accepted.body.trade.id}`, buyer.authHeaders);
 
   assert.equal(accepted.status, 200);
   assert.equal(accepted.body.offer.status, 'ACCEPTED');
@@ -1527,9 +1577,9 @@ test('completed trades create auditable reputation events and update scores', as
     actorAgentId: buyer.id
   });
 
-  const sellerReputation = await client.get(`/v1/agents/${seller.id}/reputation`);
-  const buyerReputation = await client.get(`/v1/agents/${buyer.id}/reputation`);
-  const missing = await client.get('/v1/agents/agt_missing/reputation');
+  const sellerReputation = await client.getWithHeaders(`/v1/agents/${seller.id}/reputation`, seller.authHeaders);
+  const buyerReputation = await client.getWithHeaders(`/v1/agents/${buyer.id}/reputation`, buyer.authHeaders);
+  const missing = await client.adminGet('/v1/agents/agt_missing/reputation');
 
   assert.equal(sellerReputation.status, 200);
   assert.equal(sellerReputation.body.agent.reputationScore, 3);
@@ -1586,6 +1636,7 @@ test('admin ops endpoints expose events, drilldowns, and controls', async () => 
     resourceType: 'listing',
     resourceId: listing.id
   });
+  const reconciliation = await client.adminGet('/v1/admin/reconciliation');
   const cleanup = await client.adminPost('/v1/maintenance/cleanup');
 
   assert.equal(events.status, 200);
@@ -1603,6 +1654,9 @@ test('admin ops endpoints expose events, drilldowns, and controls', async () => 
   assert.equal(flagged.body.agent.status, 'flagged');
   assert.equal(filteredEvents.status, 200);
   assert.equal(filteredEvents.body.events.some((event) => event.type === 'listing.paused'), true);
+  assert.equal(reconciliation.status, 200);
+  assert.equal(reconciliation.body.reconciliation.counts.paymentIntents >= 0, true);
+  assert.equal(Array.isArray(reconciliation.body.reconciliation.findings), true);
   assert.equal(cleanup.status, 200);
   assert.equal(cleanup.body.cleanup.removedChallenges >= 0, true);
 });
@@ -1625,8 +1679,8 @@ test('refund outcomes reduce seller reputation and clamp scores', async () => {
     actorAgentId: seller.id
   });
 
-  const sellerReputation = await client.get(`/v1/agents/${seller.id}/reputation`);
-  const buyerAgent = await client.get(`/v1/agents/${trade.body.trade.buyerAgentId}`);
+  const sellerReputation = await client.getWithHeaders(`/v1/agents/${seller.id}/reputation`, seller.authHeaders);
+  const buyerAgent = await client.getWithHeaders(`/v1/agents/${trade.body.trade.buyerAgentId}`, buyer.authHeaders);
 
   assert.equal(sellerReputation.body.agent.reputationScore, 0);
   assert.equal(sellerReputation.body.reputationEvents[0].reason, 'TRADE_REFUNDED');

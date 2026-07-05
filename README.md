@@ -35,6 +35,7 @@ Hosted smoke check:
 AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy
 AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run smoke:deploy:bot
 AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run private-alpha:check
+AGENT_EXCHANGE_URL=https://ax-7508.onrender.com ADMIN_TOKEN=<token> npm run reconcile
 ```
 
 Dashboard visual check, with the API running locally:
@@ -73,6 +74,7 @@ npm run mcp
 - `GET /v1/admin/events/stream`
 - `GET /v1/admin/request-logs`
 - `GET /v1/admin/moderation`
+- `GET /v1/admin/reconciliation`
 - `GET /v1/admin/inspect/:type/:id`
 - `POST /v1/admin/listings/:id/pause`
 - `POST /v1/admin/agents/:id/flag`

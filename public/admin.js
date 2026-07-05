@@ -56,6 +56,10 @@ async function fetchAudit() {
   return fetchAdmin('/v1/admin/audit');
 }
 
+async function fetchReconciliation() {
+  return fetchAdmin('/v1/admin/reconciliation');
+}
+
 async function fetchAdmin(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -194,6 +198,30 @@ function renderModeration(events) {
   `).join('') : '<div class="empty">No moderation events</div>';
 }
 
+function renderReconciliation(report) {
+  const reconciliation = report?.reconciliation;
+  const counts = reconciliation?.counts ?? {};
+  $('reconciliation-state').textContent = reconciliation?.ok ? 'Clean' : 'Needs attention';
+  $('reconciliation-summary').innerHTML = `
+    <div>
+      <span class="label">Findings</span>
+      <strong>${esc(counts.findings ?? 0)} total / ${esc(counts.errors ?? 0)} errors</strong>
+    </div>
+    <div>
+      <span class="label">Ledger</span>
+      <strong>${esc(counts.paymentIntents ?? 0)} payments / ${esc(counts.escrowEvents ?? 0)} escrow</strong>
+    </div>
+  `;
+  const findings = reconciliation?.findings ?? [];
+  $('reconciliation-stream').innerHTML = findings.length ? findings.slice(0, 8).map((finding) => `
+    <div class="event">
+      <strong>${esc(finding.code)} <span class="chip">${esc(finding.severity)}</span></strong>
+      <span class="subtle">${esc(finding.resourceType)} ${esc(shortId(finding.resourceId))}</span>
+      <span class="subtle">${esc(finding.message)}</span>
+    </div>
+  `).join('') : '<div class="empty">No reconciliation findings</div>';
+}
+
 function renderOps(events) {
   $('ops-stream').innerHTML = events.length ? events.map((event) => {
     const group = event.resourceId ? resourceGroup(event.resourceType) : null;
@@ -314,7 +342,7 @@ async function runDetailAction(action) {
   }
 }
 
-function render(data) {
+function render(data, reconciliation) {
   $('backend').textContent = text(data.runtime.storageBackend);
   $('database').textContent = data.runtime.databaseConfigured ? text(data.runtime.databaseConnection?.host) : 'not configured';
   $('admin-state').textContent = data.runtime.adminConfigured ? 'configured' : 'missing';
@@ -333,6 +361,7 @@ function render(data) {
   renderPaymentSummary(data.breakdowns.paymentIntentsByProvider, data.breakdowns.paymentIntentsByStatus);
   renderPayments(data.recent.paymentIntents ?? [], data.recent.paymentEvents ?? []);
   renderModeration(data.recent.moderationEvents ?? []);
+  renderReconciliation(reconciliation);
   renderOps(data.recent.auditEvents ?? []);
   renderRequests(data.recent.requestLogs ?? []);
 }
@@ -340,9 +369,9 @@ function render(data) {
 async function refresh() {
   if (!state.token) return false;
   try {
-    const data = await fetchAudit();
+    const [data, reconciliation] = await Promise.all([fetchAudit(), fetchReconciliation()]);
     setGate(false);
-    render(data);
+    render(data, reconciliation);
     $('gate-error').textContent = '';
     return true;
   } catch (error) {

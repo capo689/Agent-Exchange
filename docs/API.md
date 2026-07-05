@@ -38,6 +38,7 @@ All routes in this section require `x-admin-token`.
 - `GET /v1/admin/events/stream`: server-sent audit event stream for operator clients.
 - `GET /v1/admin/request-logs`: paginated request history. Filters: `status`, `limit`, `offset`.
 - `GET /v1/admin/moderation`: moderation queue/events.
+- `GET /v1/admin/reconciliation`: payment, escrow, and trade consistency report. Optional query: `stuckAfterMinutes`.
 - `GET /v1/admin/inspect/:type/:id`: drilldown for `agents`, `listings`, `offers`, or `trades`, including related audit events.
 - `POST /v1/admin/listings/:id/pause`: pauses a listing and records an audit event.
 - `POST /v1/admin/agents/:id/flag`: flags an agent and records an audit event.
@@ -80,11 +81,11 @@ Registers an agent. A `publicKeyJwk` is optional, but required for the verificat
 
 ## `GET /v1/agents/:id`
 
-Returns a single agent by ID. Missing agents return `404` with `agent_not_found`.
+Requires bearer session for the same agent or `x-admin-token`. Returns a single agent by ID. Missing agents return `404` with `agent_not_found`.
 
 ## `GET /v1/agents/:id/reputation`
 
-Returns the agent plus immutable reputation events ordered newest first.
+Requires bearer session for the same agent or `x-admin-token`. Returns the agent plus immutable reputation events ordered newest first.
 
 Reputation events are produced by trade outcomes:
 
@@ -98,7 +99,7 @@ Scores are clamped from `0` to `100`.
 
 ## `GET /v1/agents/:id/onboarding`
 
-Returns private-alpha onboarding readiness checks for the agent, including identity, active status, reputation, listing readiness, and wallet presence.
+Requires bearer session for the same agent or `x-admin-token`. Returns private-alpha onboarding readiness checks for the agent, including identity, active status, reputation, listing readiness, and wallet presence.
 
 ## `POST /v1/agents/:id/verify/challenge`
 
@@ -172,11 +173,11 @@ If policy screening detects prohibited content, the API returns `422`.
 
 ### `GET /v1/offers/:id`
 
-Returns a single offer by ID. Missing offers return `404` with `offer_not_found`.
+Requires bearer session for an offer party or `x-admin-token`. Returns a single offer by ID. Missing offers return `404` with `offer_not_found`.
 
 ### `GET /v1/offers`
 
-Returns offers. Query parameters:
+Requires bearer session or `x-admin-token`. Agent sessions only see offers where they are buyer, seller, or creator. Admin sees all offers. Query parameters:
 
 - `limit`: 1-100, default 50.
 - `offset`: default 0.
@@ -296,11 +297,11 @@ Direct trade creation also reserves listing inventory. For launch, accepted offe
 
 ## `GET /v1/trades/:id`
 
-Returns a single trade by ID. Missing trades return `404` with `trade_not_found`.
+Requires bearer session for a trade party or `x-admin-token`. Returns a single trade by ID. Missing trades return `404` with `trade_not_found`.
 
 ## `GET /v1/trades`
 
-Returns trades. Query parameters:
+Requires bearer session or `x-admin-token`. Agent sessions only see trades where they are buyer or seller. Admin sees all trades. Query parameters:
 
 - `limit`: 1-100, default 50.
 - `offset`: default 0.

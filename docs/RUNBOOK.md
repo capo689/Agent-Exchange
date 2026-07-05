@@ -267,6 +267,23 @@ Before running mainnet, set Render `X402_NETWORK=eip155:8453` and `X402_ASSET=0x
 
 After a successful probe, check `/admin` or `GET /v1/admin/payments?provider=x402` with `x-admin-token` to verify the settlement is visible in the payment ledger.
 
+## Reconciliation
+
+Before and after every payment test, run the admin reconciliation report:
+
+```bash
+curl -sS 'https://YOUR_RENDER_SERVICE.onrender.com/v1/admin/reconciliation' \
+  -H 'x-admin-token: <ADMIN_TOKEN>'
+```
+
+Or from the repo:
+
+```bash
+AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com ADMIN_TOKEN=<ADMIN_TOKEN> npm run reconcile
+```
+
+Expected beta gate: `reconciliation.ok: true`. Any `error` finding blocks new real-payment volume until explained or repaired.
+
 ## Manual USDC Fallback
 
 Use this path when a buyer wallet cannot be driven by the x402 CLI signer or when the CDP mainnet facilitator is not configured yet. It verifies a normal USDC transfer on Base and records it in the same payment ledger.

@@ -25,6 +25,7 @@ import {
 import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
 import { createPostgresStore } from './postgres-store.js';
 import { createRateLimiter } from './rate-limit.js';
+import { buildReconciliationReport } from './reconciliation.js';
 import { createStore } from './store.js';
 import { canTransition, getTransition } from './trades.js';
 
@@ -550,6 +551,56 @@ function requireAdmin(headers) {
   return null;
 }
 
+function isAdminRequest(headers) {
+  const expected = process.env.ADMIN_TOKEN;
+  return Boolean(expected && getHeader(headers, 'x-admin-token') === expected);
+}
+
+async function authorizeAdminOrAgent(headers, store) {
+  if (isAdminRequest(headers)) {
+    return { access: { role: 'admin', isAdmin: true, agentId: null, agent: null, session: null } };
+  }
+
+  const authResult = await authenticateAgent(headers, store);
+  if (authResult.error) return authResult;
+  return {
+    access: {
+      role: 'agent',
+      isAdmin: false,
+      agentId: authResult.auth.agentId,
+      agent: authResult.auth.agent,
+      session: authResult.auth.session
+    }
+  };
+}
+
+function requireOwnAgentOrAdmin(agentId, access) {
+  if (access.isAdmin || access.agentId === agentId) return null;
+  return {
+    status: 403,
+    body: {
+      error: 'resource_access_denied',
+      message: 'This resource is visible only to the owning agent or an admin.'
+    }
+  };
+}
+
+function isTradeParty(trade, agentId) {
+  return trade?.buyerAgentId === agentId || trade?.sellerAgentId === agentId;
+}
+
+function isOfferParty(offer, agentId) {
+  return offer?.buyerAgentId === agentId || offer?.sellerAgentId === agentId || offer?.createdByAgentId === agentId;
+}
+
+function paginateScoped(items, filters) {
+  return items.slice(filters.offset, filters.offset + filters.limit);
+}
+
+function scopedQueryForList(filters) {
+  return { ...filters, limit: 10000, offset: 0 };
+}
+
 function requireBodyActorMatchesSession(body, auth) {
   if (body.actorAgentId && body.actorAgentId !== auth.agentId) {
     return {
@@ -927,6 +978,8 @@ export async function handleApiRequest(
 
   const listingOffersMatch = pathname.match(/^\/v1\/listings\/([^/]+)\/offers$/);
   if (method === 'GET' && listingOffersMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
     const listQuery = parseListQuery(query, {
       buyerAgentId: {},
       sellerAgentId: {},
@@ -934,7 +987,11 @@ export async function handleApiRequest(
     });
     if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
     const filters = { ...listQuery.filters, listingId: listingOffersMatch[1] };
-    const offers = await store.listOffers(filters);
+    const allOffers = await store.listOffers(scopedQueryForList(filters));
+    const visibleOffers = accessResult.access.isAdmin
+      ? allOffers
+      : allOffers.filter((offer) => isOfferParty(offer, accessResult.access.agentId));
+    const offers = paginateScoped(visibleOffers, filters);
     return {
       status: 200,
       body: paginatedBody('offers', offers, filters)
@@ -994,7 +1051,12 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/agents') {
-    return { status: 200, body: { agents: await store.listAgents() } };
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
+    const agents = accessResult.access.isAdmin
+      ? await store.listAgents()
+      : [accessResult.access.agent];
+    return { status: 200, body: { agents } };
   }
 
   if (method === 'GET' && pathname === '/v1/paid/market-snapshot') {
@@ -1185,6 +1247,30 @@ export async function handleApiRequest(
       body: {
         ...paginatedBody('paymentIntents', await store.listPaymentIntents(intentQuery.filters), intentQuery.filters),
         paymentEvents: await store.listPaymentEvents({ limit: 100, offset: 0 })
+      }
+    };
+  }
+
+  if (method === 'GET' && pathname === '/v1/admin/reconciliation') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const stuckAfterMinutes = queryValue(query, 'stuckAfterMinutes');
+    const parsedStuckAfter = stuckAfterMinutes == null
+      ? 30
+      : Number(stuckAfterMinutes);
+    if (!Number.isInteger(parsedStuckAfter) || parsedStuckAfter < 1 || parsedStuckAfter > 1440) {
+      return {
+        status: 400,
+        body: {
+          error: 'invalid_query',
+          errors: ['stuckAfterMinutes must be an integer between 1 and 1440']
+        }
+      };
+    }
+    return {
+      status: 200,
+      body: {
+        reconciliation: await buildReconciliationReport(store, { stuckAfterMinutes: parsedStuckAfter })
       }
     };
   }
@@ -1527,8 +1613,12 @@ export async function handleApiRequest(
 
   const agentReputationMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/reputation$/);
   if (method === 'GET' && agentReputationMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
     const agent = await store.getAgent(agentReputationMatch[1]);
     if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    const accessError = requireOwnAgentOrAdmin(agent.id, accessResult.access);
+    if (accessError) return accessError;
     return {
       status: 200,
       body: {
@@ -1540,16 +1630,24 @@ export async function handleApiRequest(
 
   const agentOnboardingMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/onboarding$/);
   if (method === 'GET' && agentOnboardingMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
     const agent = await store.getAgent(agentOnboardingMatch[1]);
     if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    const accessError = requireOwnAgentOrAdmin(agent.id, accessResult.access);
+    if (accessError) return accessError;
     const listings = await store.listListings({ sellerAgentId: agent.id, limit: 10000, offset: 0 });
     return { status: 200, body: { onboarding: agentOnboardingStatus(agent, listings) } };
   }
 
   const agentMatch = pathname.match(/^\/v1\/agents\/([^/]+)$/);
   if (method === 'GET' && agentMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
     const agent = await store.getAgent(agentMatch[1]);
     if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    const accessError = requireOwnAgentOrAdmin(agent.id, accessResult.access);
+    if (accessError) return accessError;
     return { status: 200, body: { agent } };
   }
 
@@ -1750,6 +1848,8 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/trades') {
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
     const listQuery = parseListQuery(query, {
       listingId: {},
       buyerAgentId: {},
@@ -1757,18 +1857,29 @@ export async function handleApiRequest(
       state: {}
     });
     if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
-    const trades = await store.listTrades(listQuery.filters);
+    const allTrades = await store.listTrades(scopedQueryForList(listQuery.filters));
+    const visibleTrades = accessResult.access.isAdmin
+      ? allTrades
+      : allTrades.filter((trade) => isTradeParty(trade, accessResult.access.agentId));
+    const trades = paginateScoped(visibleTrades, listQuery.filters);
     return { status: 200, body: paginatedBody('trades', trades, listQuery.filters) };
   }
 
   const tradeMatch = pathname.match(/^\/v1\/trades\/([^/]+)$/);
   if (method === 'GET' && tradeMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
     const trade = await store.getTrade(tradeMatch[1]);
     if (!trade) return { status: 404, body: { error: 'trade_not_found' } };
+    if (!accessResult.access.isAdmin && !isTradeParty(trade, accessResult.access.agentId)) {
+      return { status: 403, body: { error: 'trade_party_required' } };
+    }
     return { status: 200, body: { trade } };
   }
 
   if (method === 'GET' && pathname === '/v1/offers') {
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
     const listQuery = parseListQuery(query, {
       listingId: {},
       buyerAgentId: {},
@@ -1776,14 +1887,23 @@ export async function handleApiRequest(
       status: {}
     });
     if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
-    const offers = await store.listOffers(listQuery.filters);
+    const allOffers = await store.listOffers(scopedQueryForList(listQuery.filters));
+    const visibleOffers = accessResult.access.isAdmin
+      ? allOffers
+      : allOffers.filter((offer) => isOfferParty(offer, accessResult.access.agentId));
+    const offers = paginateScoped(visibleOffers, listQuery.filters);
     return { status: 200, body: paginatedBody('offers', offers, listQuery.filters) };
   }
 
   const offerMatch = pathname.match(/^\/v1\/offers\/([^/]+)$/);
   if (method === 'GET' && offerMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
     const offer = await store.getOffer(offerMatch[1]);
     if (!offer) return { status: 404, body: { error: 'offer_not_found' } };
+    if (!accessResult.access.isAdmin && !isOfferParty(offer, accessResult.access.agentId)) {
+      return { status: 403, body: { error: 'offer_party_required' } };
+    }
     return { status: 200, body: { offer } };
   }
 
@@ -1932,7 +2052,20 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/inventory/reservations') {
-    return { status: 200, body: { reservations: await store.listInventoryReservations() } };
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
+    const reservations = await store.listInventoryReservations();
+    return {
+      status: 200,
+      body: {
+        reservations: accessResult.access.isAdmin
+          ? reservations
+          : reservations.filter((reservation) => (
+              reservation.buyerAgentId === accessResult.access.agentId ||
+              reservation.sellerAgentId === accessResult.access.agentId
+            ))
+      }
+    };
   }
 
   const tradeActionMatch = pathname.match(/^\/v1\/trades\/([^/]+)\/([^/]+)$/);
@@ -2086,7 +2219,18 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/escrow/events') {
-    return { status: 200, body: { escrowEvents: await store.listEscrowEvents() } };
+    const accessResult = await authorizeAdminOrAgent(headers, store);
+    if (accessResult.error) return accessResult.error;
+    const escrowEvents = await store.listEscrowEvents();
+    if (accessResult.access.isAdmin) {
+      return { status: 200, body: { escrowEvents } };
+    }
+    const visibleEvents = [];
+    for (const event of escrowEvents) {
+      const trade = await store.getTrade(event.tradeId);
+      if (isTradeParty(trade, accessResult.access.agentId)) visibleEvents.push(event);
+    }
+    return { status: 200, body: { escrowEvents: visibleEvents } };
   }
 
   return { status: 404, body: { error: 'not_found' } };
