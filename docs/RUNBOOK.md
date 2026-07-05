@@ -64,7 +64,7 @@ Hosted command dashboard:
 https://YOUR_RENDER_SERVICE.onrender.com/admin
 ```
 
-The dashboard prompts for `ADMIN_TOKEN` and calls `GET /v1/admin/audit` with `x-admin-token`.
+The dashboard prompts for `ADMIN_TOKEN` and calls admin-only operations with `x-admin-token`. It shows marketplace totals, request logs, audit events, moderation, escrow, reputation, drilldowns, and controls for cleanup, pausing listings, and flagging agents.
 
 ## Exercise Reference Flow
 

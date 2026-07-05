@@ -32,6 +32,7 @@
           <div class="top-actions">
             <div id="live-pill" class="live-pill"><span></span> Live</div>
             <button id="refresh-button" type="button" title="Refresh">Refresh</button>
+            <button type="button" title="Cleanup expired records" data-action="cleanup">Cleanup</button>
             <button id="lock-button" type="button" title="Lock">Lock</button>
           </div>
         </header>
@@ -90,6 +91,22 @@
             <div id="reputation-stream" class="event-stream"></div>
           </section>
 
+          <section class="panel span-8">
+            <div class="panel-head">
+              <h2>Ops Stream</h2>
+              <span class="subtle">Live audit events</span>
+            </div>
+            <div id="ops-stream" class="event-stream"></div>
+          </section>
+
+          <section class="panel span-4">
+            <div class="panel-head">
+              <h2>Requests</h2>
+              <span class="subtle">Status and latency</span>
+            </div>
+            <div id="request-stream" class="event-stream"></div>
+          </section>
+
           <section class="panel span-6">
             <div class="panel-head">
               <h2>Escrow Events</h2>
@@ -104,6 +121,16 @@
               <span class="subtle">Policy signals</span>
             </div>
             <div id="moderation-stream" class="event-stream"></div>
+          </section>
+
+          <section class="panel span-12">
+            <div class="panel-head">
+              <h2>Drilldown</h2>
+              <span id="detail-label" class="subtle">Select an agent, listing, offer, or trade</span>
+            </div>
+            <div id="detail-panel" class="detail-panel">
+              <div class="empty">No selection</div>
+            </div>
           </section>
         </section>
       </section>

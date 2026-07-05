@@ -253,6 +253,10 @@ button:hover {
   grid-column: span 8;
 }
 
+.span-12 {
+  grid-column: span 12;
+}
+
 .panel h2 {
   margin: 0;
   font-size: 16px;
@@ -308,6 +312,16 @@ button:hover {
   border-top: 1px solid var(--line);
 }
 
+.table-row[data-resource],
+.event[data-resource] {
+  cursor: pointer;
+}
+
+.table-row[data-resource]:hover,
+.event[data-resource]:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -350,6 +364,47 @@ button:hover {
   padding: 18px 0;
 }
 
+.detail-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.detail-actions button.danger {
+  border-color: color-mix(in srgb, var(--coral) 52%, var(--line));
+  color: #ffd9d4;
+  background: rgba(237, 106, 90, 0.09);
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.detail-cell {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  min-width: 0;
+}
+
+.detail-cell strong,
+.detail-cell span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.detail-events {
+  display: grid;
+  gap: 8px;
+}
+
 @media (max-width: 1100px) {
   .metric-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -359,7 +414,8 @@ button:hover {
   .span-5,
   .span-6,
   .span-7,
-  .span-8 {
+  .span-8,
+  .span-12 {
     grid-column: span 12;
   }
 }
@@ -395,5 +451,9 @@ button:hover {
   .bar-row,
   .compact .bar-row {
     grid-template-columns: 112px minmax(0, 1fr) 34px;
+  }
+
+  .detail-grid {
+    grid-template-columns: 1fr;
   }
 }

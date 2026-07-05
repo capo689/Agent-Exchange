@@ -47,6 +47,16 @@ const sampleAudit = {
     moderationEvents: [
       { type: 'policy.blocked_listing', reportable: true, createdAt: new Date(Date.now() - 80000).toISOString() },
       { type: 'policy.review_warning', reportable: false, createdAt: new Date(Date.now() - 220000).toISOString() }
+    ],
+    auditEvents: [
+      { id: 'aud_1', type: 'trade.transitioned', severity: 'info', resourceType: 'trade', resourceId: 'trd_79db2a23-a19b-443a-b333-cb8170a77190', payload: { to: 'CAPTURED' }, createdAt: new Date().toISOString() },
+      { id: 'aud_2', type: 'policy.blocked_listing', severity: 'critical', resourceType: 'moderation_event', resourceId: 'mod_critical_001', payload: { reportable: true }, createdAt: new Date(Date.now() - 80000).toISOString() },
+      { id: 'aud_3', type: 'agent.flagged', severity: 'warn', resourceType: 'agent', resourceId: 'agt_labeler_pool_4401', payload: { reason: 'Manual review' }, createdAt: new Date(Date.now() - 180000).toISOString() }
+    ],
+    requestLogs: [
+      { id: 'reqlog_1', requestId: 'req_live_001', method: 'POST', path: '/v1/trades/trd_79db2a23/confirm', status: 200, latencyMs: 18.4, createdAt: new Date().toISOString() },
+      { id: 'reqlog_2', requestId: 'req_live_002', method: 'POST', path: '/v1/listings', status: 422, latencyMs: 11.7, errorCode: 'prohibited_listing', createdAt: new Date(Date.now() - 80000).toISOString() },
+      { id: 'reqlog_3', requestId: 'req_live_003', method: 'POST', path: '/v1/agents/register', status: 429, latencyMs: 1.2, errorCode: 'rate_limited', createdAt: new Date(Date.now() - 140000).toISOString() }
     ]
   }
 };

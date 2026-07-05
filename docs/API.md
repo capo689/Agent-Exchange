@@ -30,6 +30,18 @@ Requires `x-admin-token`.
 
 Returns the live dashboard payload: runtime status, marketplace totals, listing/offer/trade breakdowns, recent trades, reputation events, escrow events, and moderation events.
 
+## Admin Operations
+
+All routes in this section require `x-admin-token`.
+
+- `GET /v1/admin/events`: paginated audit/event stream. Filters: `type`, `severity`, `resourceType`, `resourceId`, `actorAgentId`, `limit`, `offset`.
+- `GET /v1/admin/events/stream`: server-sent audit event stream for operator clients.
+- `GET /v1/admin/request-logs`: paginated request history. Filters: `status`, `limit`, `offset`.
+- `GET /v1/admin/moderation`: moderation queue/events.
+- `GET /v1/admin/inspect/:type/:id`: drilldown for `agents`, `listings`, `offers`, or `trades`, including related audit events.
+- `POST /v1/admin/listings/:id/pause`: pauses a listing and records an audit event.
+- `POST /v1/admin/agents/:id/flag`: flags an agent and records an audit event.
+
 ## `GET /v1/policy`
 
 Returns the ban list, severe-abuse categories, and assurance tiers.

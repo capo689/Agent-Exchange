@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { URL } from 'node:url';
 import { getConfig, getSafeRuntimeStatus } from './config.js';
@@ -249,6 +250,41 @@ function recent(items, limit = 12) {
     .slice(0, limit);
 }
 
+function hashIp(value) {
+  return value ? createHash('sha256').update(String(value)).digest('hex') : null;
+}
+
+function clientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded) return forwarded.split(',')[0].trim();
+  return req.socket?.remoteAddress ?? null;
+}
+
+async function resolveRequestActor(headers, store) {
+  const token = getBearerToken(headers);
+  if (!token || typeof store.getSessionByToken !== 'function') return {};
+  const session = await store.getSessionByToken(token);
+  return session ? { actorAgentId: session.agentId, sessionId: session.id } : {};
+}
+
+async function safeRecordRequest(store, input) {
+  if (typeof store.recordRequestLog !== 'function') return;
+  try {
+    await store.recordRequestLog(input);
+  } catch (error) {
+    logWarn('audit.request_log_failed', { requestId: input.requestId, error });
+  }
+}
+
+async function safeRecordAudit(store, input) {
+  if (typeof store.recordAuditEvent !== 'function') return;
+  try {
+    await store.recordAuditEvent(input);
+  } catch (error) {
+    logWarn('audit.event_log_failed', { requestId: input.requestId, type: input.type, error });
+  }
+}
+
 function getHeader(headers, name) {
   return headers?.[name.toLowerCase()] ?? headers?.[name] ?? null;
 }
@@ -357,6 +393,10 @@ function requireFieldMatchesSession(field, value, auth) {
     };
   }
   return null;
+}
+
+function listingAcceptsNewTrades(listing) {
+  return listing && ['active', 'partially_filled'].includes(listing.status);
 }
 
 function authorizeTradeAction({ rawAction, trade, actor, body }) {
@@ -555,14 +595,26 @@ export async function handleApiRequest(
     if (adminError) return adminError;
 
     const dashboardLimit = 10000;
-    const [agents, listings, offers, trades, escrowEvents, moderationEvents, reputationEvents] = await Promise.all([
+    const [
+      agents,
+      listings,
+      offers,
+      trades,
+      escrowEvents,
+      moderationEvents,
+      reputationEvents,
+      auditEvents,
+      requestLogs
+    ] = await Promise.all([
       store.listAgents(),
       store.listListings({ limit: dashboardLimit, offset: 0 }),
       store.listOffers({ limit: dashboardLimit, offset: 0 }),
       store.listTrades({ limit: dashboardLimit, offset: 0 }),
       store.listEscrowEvents(),
       store.listModerationEvents(),
-      store.listReputationEvents()
+      store.listReputationEvents(),
+      typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 100, offset: 0 }) : [],
+      typeof store.listRequestLogs === 'function' ? store.listRequestLogs({ limit: 100, offset: 0 }) : []
     ]);
 
     return {
@@ -577,22 +629,103 @@ export async function handleApiRequest(
           trades: trades.length,
           escrowEvents: escrowEvents.length,
           moderationEvents: moderationEvents.length,
-          reputationEvents: reputationEvents.length
+          reputationEvents: reputationEvents.length,
+          auditEvents: auditEvents.length,
+          requestLogs: requestLogs.length
         },
         breakdowns: {
           listingsByStatus: countBy(listings, 'status'),
           listingsByAssuranceTier: countBy(listings, 'assuranceTier'),
           offersByStatus: countBy(offers, 'status'),
-          tradesByState: countBy(trades, 'state')
+          tradesByState: countBy(trades, 'state'),
+          requestLogsByStatus: countBy(requestLogs, 'status'),
+          auditEventsBySeverity: countBy(auditEvents, 'severity')
         },
         recent: {
           trades: recent(trades),
           reputationEvents: recent(reputationEvents),
           escrowEvents: recent(escrowEvents),
-          moderationEvents: recent(moderationEvents)
+          moderationEvents: recent(moderationEvents),
+          auditEvents: recent(auditEvents),
+          requestLogs: recent(requestLogs)
         }
       }
     };
+  }
+
+  if (method === 'GET' && pathname === '/v1/admin/events') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const listQuery = parseListQuery(query, {
+      type: {},
+      severity: {},
+      resourceType: {},
+      resourceId: {},
+      actorAgentId: {}
+    });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    return { status: 200, body: paginatedBody('events', await store.listAuditEvents(listQuery.filters), listQuery.filters) };
+  }
+
+  if (method === 'GET' && pathname === '/v1/admin/request-logs') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const listQuery = parseListQuery(query, { status: { type: 'integer' } });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    return { status: 200, body: paginatedBody('requestLogs', await store.listRequestLogs(listQuery.filters), listQuery.filters) };
+  }
+
+  if (method === 'GET' && pathname === '/v1/admin/moderation') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    return { status: 200, body: { moderationEvents: await store.listModerationEvents() } };
+  }
+
+  const adminInspectMatch = pathname.match(/^\/v1\/admin\/inspect\/(agents|listings|offers|trades)\/([^/]+)$/);
+  if (method === 'GET' && adminInspectMatch) {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const [, type, id] = adminInspectMatch;
+    const readers = {
+      agents: () => store.getAgent(id),
+      listings: () => store.getListing(id),
+      offers: () => store.getOffer(id),
+      trades: () => store.getTrade(id)
+    };
+    const resource = await readers[type]();
+    if (!resource) return { status: 404, body: { error: 'resource_not_found' } };
+    const singular = type.slice(0, -1);
+    const events = await store.listAuditEvents({
+      limit: 50,
+      offset: 0,
+      resourceType: singular === 'agencie' ? 'agent' : singular,
+      resourceId: id
+    });
+    return { status: 200, body: { type, id, resource, events } };
+  }
+
+  const adminPauseListingMatch = pathname.match(/^\/v1\/admin\/listings\/([^/]+)\/pause$/);
+  if (method === 'POST' && adminPauseListingMatch) {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const listing = await store.pauseListing(adminPauseListingMatch[1], {
+      reason: body.reason ?? null,
+      actor: 'admin'
+    });
+    if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
+    return { status: 200, body: { listing } };
+  }
+
+  const adminFlagAgentMatch = pathname.match(/^\/v1\/admin\/agents\/([^/]+)\/flag$/);
+  if (method === 'POST' && adminFlagAgentMatch) {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const agent = await store.flagAgent(adminFlagAgentMatch[1], {
+      reason: body.reason ?? null,
+      actor: 'admin'
+    });
+    if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    return { status: 200, body: { agent } };
   }
 
   const agentReputationMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/reputation$/);
@@ -618,7 +751,13 @@ export async function handleApiRequest(
   if (method === 'POST' && pathname === '/v1/maintenance/cleanup') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
-    return { status: 200, body: { cleanup: await store.cleanupExpired() } };
+    const cleanup = await store.cleanupExpired();
+    await safeRecordAudit(store, {
+      type: 'maintenance.cleanup',
+      severity: 'info',
+      payload: cleanup
+    });
+    return { status: 200, body: { cleanup } };
   }
 
   if (method === 'POST' && pathname === '/v1/agents/register') {
@@ -793,6 +932,9 @@ export async function handleApiRequest(
         input
       },
       async () => {
+        if (!listingAcceptsNewTrades(listing)) {
+          return { status: 409, body: { error: 'listing_not_tradeable', status: listing.status } };
+        }
         const result = await store.createTrade(input, listing);
         if (result.error) {
           return { status: 409, body: result.error };
@@ -851,6 +993,9 @@ export async function handleApiRequest(
 
     const listing = await store.getListing(body.listingId);
     if (!listing) return { status: 404, body: { error: 'listing_not_found' } };
+    if (!listingAcceptsNewTrades(listing)) {
+      return { status: 409, body: { error: 'listing_not_tradeable', status: listing.status } };
+    }
     if (!listing.acceptsOffers) return { status: 409, body: { error: 'listing_does_not_accept_offers' } };
     if (!(await store.getAgent(body.buyerAgentId))) return { status: 404, body: { error: 'buyer_agent_not_found' } };
     if (body.buyerAgentId === listing.sellerAgentId) {
@@ -1086,25 +1231,100 @@ export function createApp({
     try {
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && await serveAdminAsset(url.pathname, res)) {
+        const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
         logInfo('http.request', {
           requestId,
           method: req.method,
           path: url.pathname,
           status: 200,
-          latencyMs: Math.round((performance.now() - startedAt) * 100) / 100
+          latencyMs
         });
+        await safeRecordRequest(store, {
+          requestId,
+          method: req.method,
+          path: url.pathname,
+          route: url.pathname,
+          status: 200,
+          latencyMs,
+          ipHash: hashIp(clientIp(req)),
+          userAgent: req.headers['user-agent'] ?? null
+        });
+       return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/admin/events/stream') {
+        const adminError = requireAdmin(req.headers);
+        if (adminError) {
+          return json(res, adminError.status, { ...adminError.body, requestId });
+        }
+
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-store',
+          connection: 'keep-alive',
+          'x-request-id': requestId
+        });
+
+        let lastEventId = null;
+        const sendEvents = async () => {
+          const events = await store.listAuditEvents({ limit: 25, offset: 0 });
+          const fresh = lastEventId
+            ? events.slice(0, Math.max(0, events.findIndex((event) => event.id === lastEventId))).reverse()
+            : events.slice(0, 10).reverse();
+          for (const event of fresh) {
+            res.write(`id: ${event.id}\n`);
+            res.write(`event: audit\n`);
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
+          }
+          if (events[0]) lastEventId = events[0].id;
+        };
+
+        await sendEvents();
+        const timer = setInterval(() => {
+          sendEvents().catch((error) => {
+            logWarn('audit.stream_failed', { requestId, error });
+          });
+        }, 2000);
+        req.on('close', () => clearInterval(timer));
         return;
       }
 
       const rateLimit = rateLimiter.check(req, url.pathname);
       if (!rateLimit.allowed) {
+        const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
+        const actor = await resolveRequestActor(req.headers, store);
         logWarn('http.rate_limited', {
           requestId,
           method: req.method,
           path: url.pathname,
           bucket: rateLimit.bucket,
           retryAfterSeconds: rateLimit.retryAfterSeconds,
-          latencyMs: Math.round((performance.now() - startedAt) * 100) / 100
+          latencyMs
+        });
+        await safeRecordRequest(store, {
+          requestId,
+          method: req.method,
+          path: url.pathname,
+          route: url.pathname,
+          status: 429,
+          latencyMs,
+          ...actor,
+          errorCode: 'rate_limited',
+          ipHash: hashIp(clientIp(req)),
+          userAgent: req.headers['user-agent'] ?? null
+        });
+        await safeRecordAudit(store, {
+          type: 'http.rate_limited',
+          severity: 'warn',
+          actorAgentId: actor.actorAgentId,
+          sessionId: actor.sessionId,
+          requestId,
+          payload: {
+            method: req.method,
+            path: url.pathname,
+            bucket: rateLimit.bucket,
+            retryAfterSeconds: rateLimit.retryAfterSeconds
+          }
         });
         return json(
           res,
@@ -1130,13 +1350,42 @@ export function createApp({
         store
       );
       result.body.requestId = requestId;
+      const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
+      const actor = await resolveRequestActor(req.headers, store);
       logInfo('http.request', {
         requestId,
         method: req.method,
         path: url.pathname,
         status: result.status,
-        latencyMs: Math.round((performance.now() - startedAt) * 100) / 100
+        latencyMs
       });
+      await safeRecordRequest(store, {
+        requestId,
+        method: req.method,
+        path: url.pathname,
+        route: url.pathname,
+        status: result.status,
+        latencyMs,
+        ...actor,
+        errorCode: result.status >= 400 ? result.body.error ?? null : null,
+        ipHash: hashIp(clientIp(req)),
+        userAgent: req.headers['user-agent'] ?? null
+      });
+      if (result.status >= 400) {
+        await safeRecordAudit(store, {
+          type: result.status >= 500 ? 'http.error_response' : 'http.rejected_request',
+          severity: result.status >= 500 ? 'error' : 'warn',
+          actorAgentId: actor.actorAgentId,
+          sessionId: actor.sessionId,
+          requestId,
+          payload: {
+            method: req.method,
+            path: url.pathname,
+            status: result.status,
+            error: result.body.error ?? null
+          }
+        });
+      }
       return json(res, result.status, result.body, rateLimit.headers);
     } catch (error) {
       const status = error.code === 'REQUEST_BODY_TOO_LARGE'
@@ -1144,12 +1393,36 @@ export function createApp({
         : error instanceof SyntaxError
           ? 400
           : 500;
+      const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
       logError('http.error', {
         requestId,
         method: req.method,
         status,
-        latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        latencyMs,
         error
+      });
+      await safeRecordRequest(store, {
+        requestId,
+        method: req.method,
+        path: req.url ?? '',
+        route: req.url ?? '',
+        status,
+        latencyMs,
+        errorCode: error.code ?? (error instanceof SyntaxError ? 'invalid_json' : 'internal_error'),
+        ipHash: hashIp(clientIp(req)),
+        userAgent: req.headers['user-agent'] ?? null
+      });
+      await safeRecordAudit(store, {
+        type: 'http.error',
+        severity: status >= 500 ? 'error' : 'warn',
+        requestId,
+        payload: {
+          method: req.method,
+          path: req.url ?? '',
+          status,
+          error: error.message,
+          code: error.code ?? null
+        }
       });
       if (error.code === 'REQUEST_BODY_TOO_LARGE') {
         return json(res, 413, { error: 'request_body_too_large', requestId });

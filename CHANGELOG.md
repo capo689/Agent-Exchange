@@ -14,6 +14,7 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 - Added deterministic reputation events and agent score updates for captured, refunded, and disputed trade outcomes.
 - Added the admin command dashboard at `/admin` and the protected `GET /v1/admin/audit` operations feed.
 - Added Playwright dashboard visual QA for desktop and mobile command-console screenshots.
+- Added persistent request logs, audit events, admin event APIs, dashboard drilldowns, listing pause, agent flagging, and cleanup controls.
 
 ## 2026-07-04
 

@@ -50,6 +50,22 @@ function createClient() {
         process.env.ADMIN_TOKEN = previous;
       }
       return result;
+    },
+    adminGet(pathname, query = {}) {
+      const previous = process.env.ADMIN_TOKEN;
+      process.env.ADMIN_TOKEN = 'test-admin-token';
+      const result = handleApiRequest({
+        method: 'GET',
+        pathname,
+        query,
+        headers: { 'x-admin-token': 'test-admin-token' }
+      }, store);
+      if (previous === undefined) {
+        delete process.env.ADMIN_TOKEN;
+      } else {
+        process.env.ADMIN_TOKEN = previous;
+      }
+      return result;
     }
   };
 }
@@ -701,6 +717,62 @@ test('completed trades create auditable reputation events and update scores', as
   assert.equal(audit.body.totals.reputationEvents, 2);
   assert.equal(audit.body.breakdowns.tradesByState.CAPTURED, 1);
   assert.equal(audit.body.recent.reputationEvents.length, 2);
+  assert.ok(audit.body.totals.auditEvents >= 1);
+});
+
+test('admin ops endpoints expose events, drilldowns, and controls', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const listing = await createFungibleListing(client, seller);
+  const offer = await client.post('/v1/offers', {
+    listingId: listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 1000,
+    unitPriceUsdc: '0.010',
+    assuranceAcknowledgement: true,
+    expiresAt: futureIso()
+  });
+
+  const events = await client.adminGet('/v1/admin/events');
+  const offerDetail = await client.adminGet(`/v1/admin/inspect/offers/${offer.body.offer.id}`);
+  const listingDetail = await client.adminGet(`/v1/admin/inspect/listings/${listing.id}`);
+  const paused = await client.adminPost(`/v1/admin/listings/${listing.id}/pause`, {
+    reason: 'test pause'
+  });
+  const pausedOffer = await client.post('/v1/offers', {
+    listingId: listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 1000,
+    unitPriceUsdc: '0.010',
+    assuranceAcknowledgement: true,
+    expiresAt: futureIso()
+  });
+  const flagged = await client.adminPost(`/v1/admin/agents/${buyer.id}/flag`, {
+    reason: 'test flag'
+  });
+  const filteredEvents = await client.adminGet('/v1/admin/events', {
+    resourceType: 'listing',
+    resourceId: listing.id
+  });
+  const cleanup = await client.adminPost('/v1/maintenance/cleanup');
+
+  assert.equal(events.status, 200);
+  assert.equal(events.body.events.some((event) => event.type === 'offer.created'), true);
+  assert.equal(offerDetail.status, 200);
+  assert.equal(offerDetail.body.resource.id, offer.body.offer.id);
+  assert.equal(offerDetail.body.events.some((event) => event.resourceId === offer.body.offer.id), true);
+  assert.equal(listingDetail.status, 200);
+  assert.equal(listingDetail.body.resource.id, listing.id);
+  assert.equal(paused.status, 200);
+  assert.equal(paused.body.listing.status, 'paused');
+  assert.equal(pausedOffer.status, 409);
+  assert.equal(pausedOffer.body.error, 'listing_not_tradeable');
+  assert.equal(flagged.status, 200);
+  assert.equal(flagged.body.agent.status, 'flagged');
+  assert.equal(filteredEvents.status, 200);
+  assert.equal(filteredEvents.body.events.some((event) => event.type === 'listing.paused'), true);
+  assert.equal(cleanup.status, 200);
+  assert.equal(cleanup.body.cleanup.removedChallenges >= 0, true);
 });
 
 test('refund outcomes reduce seller reputation and clamp scores', async () => {
@@ -1045,8 +1117,9 @@ test('http server rejects oversized JSON bodies before buffering everything', as
 });
 
 test('http server rate limits repeated auth requests before route handling', async () => {
+  const store = createStore();
   const server = createApp({
-    store: createStore(),
+    store,
     rateLimiter: createRateLimiter({
       enabled: true,
       windowMs: 60_000,
@@ -1086,12 +1159,16 @@ test('http server rate limits repeated auth requests before route handling', asy
 
   const first = await emitRegisterRequest();
   const second = await emitRegisterRequest();
+  const requestLogs = store.listRequestLogs({ limit: 10 });
+  const auditEvents = store.listAuditEvents({ limit: 10 });
 
   assert.equal(first.statusCode, 201);
   assert.equal(second.statusCode, 429);
   assert.equal(second.body.error, 'rate_limited');
   assert.equal(second.headers['x-ratelimit-limit'], '1');
   assert.equal(second.headers['retry-after'], '60');
+  assert.equal(requestLogs.some((log) => log.status === 429 && log.errorCode === 'rate_limited'), true);
+  assert.equal(auditEvents.some((event) => event.type === 'http.rate_limited'), true);
 });
 
 test('http server serves the admin dashboard shell', async () => {

@@ -271,6 +271,45 @@ function reputationEventFromRow(row) {
   };
 }
 
+function requestLogFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    requestId: row.request_id,
+    method: row.method,
+    path: row.path,
+    route: row.route,
+    status: row.status,
+    latencyMs: Number(row.latency_ms),
+    actorAgentId: row.actor_agent_id,
+    sessionId: row.session_id,
+    errorCode: row.error_code,
+    ipHash: row.ip_hash,
+    userAgent: row.user_agent,
+    createdAt: iso(row.created_at)
+  };
+}
+
+function auditEventFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    type: row.type,
+    severity: row.severity,
+    actorAgentId: row.actor_agent_id,
+    sessionId: row.session_id,
+    resourceType: row.resource_type,
+    resourceId: row.resource_id,
+    requestId: row.request_id,
+    payload: row.payload ?? {},
+    createdAt: iso(row.created_at)
+  };
+}
+
+function eventActor(actor) {
+  return actor && actor !== 'admin' && actor !== 'system' ? actor : null;
+}
+
 function normalizeListingInventory(input) {
   const inventoryType = input.inventoryType ?? 'unique';
   const totalQuantity = inventoryType === 'fungible' ? Number(input.totalQuantity) : 1;
@@ -313,6 +352,28 @@ export function createPostgresStore({ connectionString }) {
       [`ofe_${randomUUID()}`, offerId, type, actorAgentId, jsonb(payload)]
     );
     return rows[0];
+  }
+
+  async function insertAuditEvent(input, client = null) {
+    const executor = client ?? pool;
+    const { rows } = await executor.query(
+      `insert into audit_events (
+        id, type, severity, actor_agent_id, session_id, resource_type, resource_id, request_id, payload
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+      returning *`,
+      [
+        input.id ?? `aud_${randomUUID()}`,
+        input.type,
+        input.severity ?? 'info',
+        input.actorAgentId ?? null,
+        input.sessionId ?? null,
+        input.resourceType ?? null,
+        input.resourceId ?? null,
+        input.requestId ?? null,
+        jsonb(input.payload ?? {})
+      ]
+    );
+    return auditEventFromRow(rows[0]);
   }
 
   async function reserveInventory({ listing, offer, actorAgentId }, client = null) {
@@ -434,6 +495,35 @@ export function createPostgresStore({ connectionString }) {
         reservationId: reservationResult.reservation.id,
         autoAcceptRuleId
       }, client);
+      await insertAuditEvent({
+        type: autoAcceptRuleId ? 'offer.auto_accepted' : 'offer.accepted',
+        severity: 'info',
+        actorAgentId,
+        resourceType: 'offer',
+        resourceId: offer.id,
+        payload: {
+          listingId: offer.listingId,
+          tradeId: trade.id,
+          reservationId: reservationResult.reservation.id,
+          autoAcceptRuleId
+        }
+      }, client);
+      await insertAuditEvent({
+        type: 'trade.created',
+        severity: 'info',
+        actorAgentId,
+        resourceType: 'trade',
+        resourceId: trade.id,
+        payload: {
+          listingId: trade.listingId,
+          offerId: offer.id,
+          buyerAgentId: trade.buyerAgentId,
+          sellerAgentId: trade.sellerAgentId,
+          state: trade.state,
+          priceUsdc: trade.priceUsdc,
+          quantity: trade.quantity
+        }
+      }, client);
 
       await client.query('commit');
       return {
@@ -508,7 +598,19 @@ export function createPostgresStore({ connectionString }) {
           'active'
         ]
       );
-      return agentFromRow(rows[0]);
+      const agent = agentFromRow(rows[0]);
+      await insertAuditEvent({
+        type: 'agent.created',
+        severity: 'info',
+        actorAgentId: agent.id,
+        resourceType: 'agent',
+        resourceId: agent.id,
+        payload: {
+          developerId: agent.developerId,
+          verificationTier: agent.verificationTier
+        }
+      });
+      return agent;
     },
 
     async getAgent(id) {
@@ -516,9 +618,87 @@ export function createPostgresStore({ connectionString }) {
       return agentFromRow(rows[0]);
     },
 
+    async flagAgent(id, { reason = null, actor = 'admin' } = {}) {
+      const { rows } = await query(
+        `update agents
+         set status = 'flagged', updated_at = now()
+         where id = $1
+         returning *`,
+        [id]
+      );
+      const agent = agentFromRow(rows[0]);
+      if (!agent) return null;
+      await insertAuditEvent({
+        type: 'agent.flagged',
+        severity: 'warn',
+        actorAgentId: eventActor(actor),
+        resourceType: 'agent',
+        resourceId: agent.id,
+        payload: { reason }
+      });
+      return agent;
+    },
+
     async listAgents() {
       const { rows } = await query('select * from agents order by created_at desc');
       return rows.map(agentFromRow);
+    },
+
+    async recordRequestLog(input) {
+      const { rows } = await query(
+        `insert into request_logs (
+          id, request_id, method, path, route, status, latency_ms, actor_agent_id,
+          session_id, error_code, ip_hash, user_agent
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        returning *`,
+        [
+          input.id ?? `reqlog_${randomUUID()}`,
+          input.requestId,
+          input.method,
+          input.path,
+          input.route ?? input.path,
+          input.status,
+          input.latencyMs,
+          input.actorAgentId ?? null,
+          input.sessionId ?? null,
+          input.errorCode ?? null,
+          input.ipHash ?? null,
+          input.userAgent ?? null
+        ]
+      );
+      return requestLogFromRow(rows[0]);
+    },
+
+    async recordAuditEvent(input) {
+      return insertAuditEvent(input);
+    },
+
+    async listRequestLogs({ limit = 100, offset = 0, status } = {}) {
+      const filters = { limit, offset };
+      if (status !== undefined) filters.status = Number(status);
+      const { rows } = await selectFiltered({
+        query,
+        table: 'request_logs',
+        columns: { status: 'status' },
+        filters
+      });
+      return rows.map(requestLogFromRow);
+    },
+
+    async listAuditEvents({ limit = 100, offset = 0, type, severity, resourceType, resourceId, actorAgentId } = {}) {
+      const { rows } = await selectFiltered({
+        query,
+        table: 'audit_events',
+        columns: {
+          type: 'type',
+          severity: 'severity',
+          resourceType: 'resource_type',
+          resourceId: 'resource_id',
+          actorAgentId: 'actor_agent_id'
+        },
+        filters: { limit, offset, type, severity, resourceType, resourceId, actorAgentId }
+      });
+      return rows.map(auditEventFromRow);
     },
 
     async listReputationEvents(agentId = null) {
@@ -640,6 +820,30 @@ export function createPostgresStore({ connectionString }) {
       return listingFromRow(rows[0]);
     },
 
+    async pauseListing(id, { reason = null, actor = 'admin' } = {}) {
+      const { rows } = await query(
+        `update listings
+         set status = 'paused', updated_at = now()
+         where id = $1
+         returning *`,
+        [id]
+      );
+      const listing = listingFromRow(rows[0]);
+      if (!listing) return null;
+      await insertAuditEvent({
+        type: 'listing.paused',
+        severity: 'warn',
+        actorAgentId: eventActor(actor),
+        resourceType: 'listing',
+        resourceId: listing.id,
+        payload: {
+          sellerAgentId: listing.sellerAgentId,
+          reason
+        }
+      });
+      return listing;
+    },
+
     async createListing(input, screening) {
       const inventory = normalizeListingInventory(input);
       const listingId = `lst_${randomUUID()}`;
@@ -682,6 +886,18 @@ export function createPostgresStore({ connectionString }) {
            values ($1, $2, $3, $4, $5)`,
           [`lot_${listingId}`, listingId, inventory.totalQuantity, inventory.availableQuantity, inventory.unit]
         );
+        await insertAuditEvent({
+          type: 'listing.created',
+          severity: 'info',
+          actorAgentId: input.sellerAgentId,
+          resourceType: 'listing',
+          resourceId: listingId,
+          payload: {
+            category: input.category,
+            assuranceTier: input.assuranceTier,
+            inventoryType: inventory.inventoryType
+          }
+        }, client);
         await client.query('commit');
         return listingFromRow(rows[0]);
       } catch (error) {
@@ -709,6 +925,19 @@ export function createPostgresStore({ connectionString }) {
           jsonb(screening.matches)
         ]
       );
+      await insertAuditEvent({
+        type: 'policy.blocked_listing',
+        severity: screening.reportable ? 'critical' : 'warn',
+        actorAgentId: input.sellerAgentId ?? null,
+        resourceType: 'moderation_event',
+        resourceId: rows[0].id,
+        payload: {
+          reportable: screening.reportable,
+          matches: screening.matches.map((match) => match.id),
+          category: input.category,
+          assuranceTier: input.assuranceTier
+        }
+      });
       return rows[0];
     },
 
@@ -797,6 +1026,21 @@ export function createPostgresStore({ connectionString }) {
             jsonb(events)
           ]
         );
+        await insertAuditEvent({
+          type: 'trade.created',
+          severity: 'info',
+          actorAgentId: input.buyerAgentId,
+          resourceType: 'trade',
+          resourceId: rows[0].id,
+          payload: {
+            listingId: listing.id,
+            buyerAgentId: input.buyerAgentId,
+            sellerAgentId: listing.sellerAgentId,
+            state: 'OFFER_MADE',
+            priceUsdc: totalPriceUsdc,
+            quantity
+          }
+        }, client);
         await client.query('commit');
         return { trade: tradeFromRow(rows[0]), reservation: reservationResult.reservation };
       } catch (error) {
@@ -842,6 +1086,22 @@ export function createPostgresStore({ connectionString }) {
         );
         await addOfferEvent(offerId, input.parentOfferId ? 'COUNTERED' : 'OFFER_RECEIVED', input.actorAgentId ?? input.buyerAgentId, {
           parentOfferId: input.parentOfferId ?? null
+        }, client);
+        await insertAuditEvent({
+          type: input.parentOfferId ? 'offer.countered' : 'offer.created',
+          severity: 'info',
+          actorAgentId: input.actorAgentId ?? input.buyerAgentId,
+          resourceType: 'offer',
+          resourceId: offerId,
+          payload: {
+            listingId: listing.id,
+            buyerAgentId: input.buyerAgentId,
+            sellerAgentId: listing.sellerAgentId,
+            quantity,
+            unitPriceUsdc,
+            totalPriceUsdc,
+            parentOfferId: input.parentOfferId ?? null
+          }
         }, client);
         await client.query('commit');
         return offerFromRow(rows[0]);
@@ -909,7 +1169,18 @@ export function createPostgresStore({ connectionString }) {
         [offerId, offerStatuses.rejected]
       );
       await addOfferEvent(offerId, 'REJECTED', actorAgentId);
-      return offerFromRow(rows[0]);
+      const offer = offerFromRow(rows[0]);
+      if (offer) {
+        await insertAuditEvent({
+          type: 'offer.rejected',
+          severity: 'info',
+          actorAgentId,
+          resourceType: 'offer',
+          resourceId: offer.id,
+          payload: { listingId: offer.listingId }
+        });
+      }
+      return offer;
     },
 
     async withdrawOffer(offerId, actorAgentId) {
@@ -918,7 +1189,18 @@ export function createPostgresStore({ connectionString }) {
         [offerId, offerStatuses.withdrawn]
       );
       await addOfferEvent(offerId, 'WITHDRAWN', actorAgentId);
-      return offerFromRow(rows[0]);
+      const offer = offerFromRow(rows[0]);
+      if (offer) {
+        await insertAuditEvent({
+          type: 'offer.withdrawn',
+          severity: 'info',
+          actorAgentId,
+          resourceType: 'offer',
+          resourceId: offer.id,
+          payload: { listingId: offer.listingId }
+        });
+      }
+      return offer;
     },
 
     async expireOffer(offerId, actorAgentId = 'system') {
@@ -927,7 +1209,18 @@ export function createPostgresStore({ connectionString }) {
         [offerId, offerStatuses.expired]
       );
       await addOfferEvent(offerId, 'EXPIRED', actorAgentId);
-      return offerFromRow(rows[0]);
+      const offer = offerFromRow(rows[0]);
+      if (offer) {
+        await insertAuditEvent({
+          type: 'offer.expired',
+          severity: 'info',
+          actorAgentId: eventActor(actorAgentId),
+          resourceType: 'offer',
+          resourceId: offer.id,
+          payload: { listingId: offer.listingId }
+        });
+      }
+      return offer;
     },
 
     async evaluateAutoAccept(offer) {
@@ -1019,7 +1312,18 @@ export function createPostgresStore({ connectionString }) {
          returning *`,
         [ruleId, actorAgentId]
       );
-      return autoAcceptRuleFromRow(rows[0]);
+      const rule = autoAcceptRuleFromRow(rows[0]);
+      if (rule) {
+        await insertAuditEvent({
+          type: 'auto_accept_rule.disabled',
+          severity: 'warn',
+          actorAgentId,
+          resourceType: 'auto_accept_rule',
+          resourceId: rule.id,
+          payload: { listingId: rule.listingId }
+        });
+      }
+      return rule;
     },
 
     async listInventoryReservations({ listingId } = {}) {
@@ -1120,7 +1424,35 @@ export function createPostgresStore({ connectionString }) {
               })
             ]
           );
+          await insertAuditEvent({
+            type: 'reputation.changed',
+            severity: impact.delta < 0 ? 'warn' : 'info',
+            actorAgentId: impact.agentId,
+            resourceType: 'agent',
+            resourceId: impact.agentId,
+            payload: {
+              tradeId: updatedTrade.id,
+              role: impact.role,
+              delta: impact.delta,
+              reason: impact.reason,
+              previousScore,
+              newScore
+            }
+          }, client);
         }
+
+        await insertAuditEvent({
+          type: 'trade.transitioned',
+          severity: transition.to === 'DISPUTED' ? 'warn' : 'info',
+          actorAgentId: eventActor(transition.actor),
+          resourceType: 'trade',
+          resourceId: updatedTrade.id,
+          payload: {
+            from: trade.state,
+            to: transition.to,
+            eventType: transition.eventType
+          }
+        }, client);
 
         await client.query('commit');
         return updatedTrade;
@@ -1139,7 +1471,21 @@ export function createPostgresStore({ connectionString }) {
          returning *`,
         [`esc_${randomUUID()}`, tradeId, type, amountUsdc, actor, 'stub', jsonb(payload)]
       );
-      return escrowEventFromRow(rows[0]);
+      const event = escrowEventFromRow(rows[0]);
+      await insertAuditEvent({
+        type: 'escrow.event_created',
+        severity: 'info',
+        actorAgentId: eventActor(actor),
+        resourceType: 'trade',
+        resourceId: tradeId,
+        payload: {
+          escrowEventId: event.id,
+          escrowType: type,
+          amountUsdc,
+          adapter: event.adapter
+        }
+      });
+      return event;
     },
 
     async listEscrowEvents() {

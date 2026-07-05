@@ -1,6 +1,7 @@
 const state = {
   token: sessionStorage.getItem('ax_admin_token') ?? '',
-  timer: null
+  timer: null,
+  selection: null
 };
 
 const colors = ['#4fc3bd', '#e0b94a', '#ed6a5a', '#9f8cff', '#49d18f', '#d88fd8'];
@@ -19,6 +20,15 @@ function $(id) {
 
 function text(value) {
   return value === undefined || value === null || value === '' ? '-' : String(value);
+}
+
+function esc(value) {
+  return text(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function shortId(value) {
@@ -42,8 +52,13 @@ function setGate(visible) {
 }
 
 async function fetchAudit() {
-  const response = await fetch('/v1/admin/audit', {
-    headers: { 'x-admin-token': state.token }
+  return fetchAdmin('/v1/admin/audit');
+}
+
+async function fetchAdmin(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { 'x-admin-token': state.token, ...(options.headers ?? {}) }
   });
   const payload = await response.json();
   if (!response.ok) {
@@ -52,12 +67,20 @@ async function fetchAudit() {
   return payload;
 }
 
+async function postAdmin(path, body = {}) {
+  return fetchAdmin(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
+
 function renderTotals(data) {
   $('totals').innerHTML = totals.map(([key, label], index) => `
     <article class="metric" style="--accent:${colors[index % colors.length]}">
       <div>
-        <span class="label">${label}</span>
-        <strong>${text(data.totals[key])}</strong>
+        <span class="label">${esc(label)}</span>
+        <strong>${esc(data.totals[key])}</strong>
       </div>
       <span class="spark" aria-hidden="true"></span>
     </article>
@@ -70,43 +93,43 @@ function renderBars(id, counts) {
   const fallback = '<div class="empty">No data</div>';
   $(id).innerHTML = entries.length ? entries.map(([name, count], index) => `
     <div class="bar-row">
-      <span>${text(name)}</span>
+      <span>${esc(name)}</span>
       <span class="bar-track">
         <span class="bar-fill" style="--w:${Math.max(4, (count / max) * 100)}%;--accent:${colors[index % colors.length]}"></span>
       </span>
-      <strong>${count}</strong>
+      <strong>${esc(count)}</strong>
     </div>
   `).join('') : fallback;
 }
 
 function renderTrades(trades) {
   $('trades-table').innerHTML = trades.length ? trades.map((trade) => `
-    <div class="table-row">
-      <span><strong>${shortId(trade.id)}</strong></span>
-      <span>${shortId(trade.buyerAgentId)}</span>
-      <span>${shortId(trade.sellerAgentId)}</span>
-      <span class="chip">${text(trade.state)}</span>
-      <span>${text(trade.priceUsdc)} USDC</span>
+    <div class="table-row" data-resource="trades" data-resource-id="${esc(trade.id)}">
+      <span><strong>${esc(shortId(trade.id))}</strong></span>
+      <span data-resource="agents" data-resource-id="${esc(trade.buyerAgentId)}">${esc(shortId(trade.buyerAgentId))}</span>
+      <span data-resource="agents" data-resource-id="${esc(trade.sellerAgentId)}">${esc(shortId(trade.sellerAgentId))}</span>
+      <span class="chip">${esc(trade.state)}</span>
+      <span>${esc(trade.priceUsdc)} USDC</span>
     </div>
   `).join('') : '<div class="empty">No trades</div>';
 }
 
 function renderReputation(events) {
   $('reputation-stream').innerHTML = events.length ? events.map((event) => `
-    <div class="event">
-      <strong>${event.delta > 0 ? '+' : ''}${event.delta} ${text(event.reason)}</strong>
-      <span class="subtle">${shortId(event.agentId)} ${event.previousScore} -> ${event.newScore}</span>
-      <span class="subtle">${time(event.createdAt)}</span>
+    <div class="event" data-resource="agents" data-resource-id="${esc(event.agentId)}">
+      <strong>${esc(`${event.delta > 0 ? '+' : ''}${event.delta} ${text(event.reason)}`)}</strong>
+      <span class="subtle">${esc(shortId(event.agentId))} ${esc(event.previousScore)} -> ${esc(event.newScore)}</span>
+      <span class="subtle">${esc(time(event.createdAt))}</span>
     </div>
   `).join('') : '<div class="empty">No reputation events</div>';
 }
 
 function renderEscrow(events) {
   $('escrow-stream').innerHTML = events.length ? events.map((event) => `
-    <div class="event">
-      <strong>${text(event.type)} ${text(event.amountUsdc)} USDC</strong>
-      <span class="subtle">${shortId(event.tradeId)} via ${text(event.adapter)}</span>
-      <span class="subtle">${time(event.createdAt)}</span>
+    <div class="event" data-resource="trades" data-resource-id="${esc(event.tradeId)}">
+      <strong>${esc(event.type)} ${esc(event.amountUsdc)} USDC</strong>
+      <span class="subtle">${esc(shortId(event.tradeId))} via ${esc(event.adapter)}</span>
+      <span class="subtle">${esc(time(event.createdAt))}</span>
     </div>
   `).join('') : '<div class="empty">No escrow events</div>';
 }
@@ -114,11 +137,117 @@ function renderEscrow(events) {
 function renderModeration(events) {
   $('moderation-stream').innerHTML = events.length ? events.map((event) => `
     <div class="event">
-      <strong>${text(event.type)}</strong>
+      <strong>${esc(event.type)}</strong>
       <span class="subtle">${event.reportable ? 'reportable' : 'not reportable'}</span>
-      <span class="subtle">${time(event.createdAt)}</span>
+      <span class="subtle">${esc(time(event.createdAt))}</span>
     </div>
   `).join('') : '<div class="empty">No moderation events</div>';
+}
+
+function renderOps(events) {
+  $('ops-stream').innerHTML = events.length ? events.map((event) => {
+    const group = event.resourceId ? resourceGroup(event.resourceType) : null;
+    return `
+      <div class="event" ${group ? `data-resource="${esc(group)}" data-resource-id="${esc(event.resourceId)}"` : ''}>
+        <strong>${esc(event.type)} <span class="chip">${esc(event.severity)}</span></strong>
+        <span class="subtle">${esc(event.resourceType ?? 'system')} ${esc(shortId(event.resourceId))}</span>
+        <span class="subtle">${esc(time(event.createdAt))}</span>
+      </div>
+    `;
+  }).join('') : '<div class="empty">No ops events</div>';
+}
+
+function renderRequests(logs) {
+  $('request-stream').innerHTML = logs.length ? logs.map((log) => `
+    <div class="event">
+      <strong>${esc(log.status)} ${esc(log.method)} ${esc(log.path)}</strong>
+      <span class="subtle">${esc(log.latencyMs)}ms ${esc(log.errorCode ?? '')}</span>
+      <span class="subtle">${esc(time(log.createdAt))}</span>
+    </div>
+  `).join('') : '<div class="empty">No requests logged</div>';
+}
+
+function resourceGroup(resourceType) {
+  return {
+    agent: 'agents',
+    listing: 'listings',
+    offer: 'offers',
+    trade: 'trades'
+  }[resourceType] ?? null;
+}
+
+function summaryCells(resource) {
+  return Object.entries(resource ?? {})
+    .filter(([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value))
+    .slice(0, 16)
+    .map(([key, value]) => `
+      <div class="detail-cell">
+        <span class="label">${esc(key)}</span>
+        <strong>${esc(value)}</strong>
+      </div>
+    `).join('');
+}
+
+function renderDetail(data) {
+  const resource = data.resource;
+  const type = data.type;
+  $('detail-label').textContent = `${type} / ${data.id}`;
+  const canPause = type === 'listings' && resource.status !== 'paused';
+  const canFlag = type === 'agents' && resource.status !== 'flagged';
+  $('detail-panel').innerHTML = `
+    <div class="detail-actions">
+      ${canPause ? '<button class="danger" type="button" data-action="pause-listing">Pause listing</button>' : ''}
+      ${canFlag ? '<button class="danger" type="button" data-action="flag-agent">Flag agent</button>' : ''}
+      <button type="button" data-action="refresh-detail">Refresh</button>
+    </div>
+    <div class="detail-grid">${summaryCells(resource)}</div>
+    <div>
+      <span class="label">Related events</span>
+      <div class="detail-events">
+        ${(data.events ?? []).length ? data.events.map((event) => `
+          <div class="event">
+            <strong>${esc(event.type)} <span class="chip">${esc(event.severity)}</span></strong>
+            <span class="subtle">${esc(time(event.createdAt))}</span>
+          </div>
+        `).join('') : '<div class="empty">No related events</div>'}
+      </div>
+    </div>
+  `;
+  state.selection = { type, id: data.id };
+}
+
+async function inspectResource(type, id) {
+  if (!type || !id || type === 'auto_accept_rules') return;
+  const data = await fetchAdmin(`/v1/admin/inspect/${type}/${encodeURIComponent(id)}`);
+  renderDetail(data);
+}
+
+async function runDetailAction(action) {
+  if (action === 'cleanup') {
+    await postAdmin('/v1/maintenance/cleanup', {});
+    await refresh();
+    return;
+  }
+  if (!state.selection) return;
+  if (action === 'refresh-detail') {
+    await inspectResource(state.selection.type, state.selection.id);
+    return;
+  }
+  if (action === 'pause-listing' && state.selection.type === 'listings') {
+    await postAdmin(`/v1/admin/listings/${encodeURIComponent(state.selection.id)}/pause`, {
+      reason: 'Paused from admin dashboard'
+    });
+    await inspectResource(state.selection.type, state.selection.id);
+    await refresh();
+    return;
+  }
+  if (action === 'flag-agent' && state.selection.type === 'agents') {
+    await postAdmin(`/v1/admin/agents/${encodeURIComponent(state.selection.id)}/flag`, {
+      reason: 'Flagged from admin dashboard'
+    });
+    await inspectResource(state.selection.type, state.selection.id);
+    await refresh();
+  }
 }
 
 function render(data) {
@@ -138,6 +267,8 @@ function render(data) {
   renderReputation(data.recent.reputationEvents ?? []);
   renderEscrow(data.recent.escrowEvents ?? []);
   renderModeration(data.recent.moderationEvents ?? []);
+  renderOps(data.recent.auditEvents ?? []);
+  renderRequests(data.recent.requestLogs ?? []);
 }
 
 async function refresh() {
@@ -178,6 +309,18 @@ $('lock-button').addEventListener('click', () => {
   clearInterval(state.timer);
   state.timer = null;
   setGate(true);
+});
+
+$('dashboard').addEventListener('click', async (event) => {
+  const actionTarget = event.target.closest('[data-action]');
+  if (actionTarget) {
+    await runDetailAction(actionTarget.dataset.action);
+    return;
+  }
+
+  const resourceTarget = event.target.closest('[data-resource][data-resource-id]');
+  if (!resourceTarget) return;
+  await inspectResource(resourceTarget.dataset.resource, resourceTarget.dataset.resourceId);
 });
 
 if (state.token) {

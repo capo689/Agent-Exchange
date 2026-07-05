@@ -64,6 +64,13 @@ npm run mcp
 - `GET /v1/agents/:id`
 - `GET /v1/agents/:id/reputation`
 - `GET /v1/admin/audit`
+- `GET /v1/admin/events`
+- `GET /v1/admin/events/stream`
+- `GET /v1/admin/request-logs`
+- `GET /v1/admin/moderation`
+- `GET /v1/admin/inspect/:type/:id`
+- `POST /v1/admin/listings/:id/pause`
+- `POST /v1/admin/agents/:id/flag`
 - `POST /v1/agents/register`
 - `POST /v1/agents/:id/verify/challenge`
 - `POST /v1/agents/:id/verify/response`

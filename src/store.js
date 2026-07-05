@@ -35,6 +35,8 @@ function createInitialState() {
     escrowEvents: [],
     moderationEvents: [],
     reputationEvents: [],
+    requestLogs: [],
+    auditEvents: [],
     idempotencyRecords: []
   };
 }
@@ -111,6 +113,8 @@ export function createStore({ filePath } = {}) {
   const escrowEvents = mapById(state.escrowEvents);
   const moderationEvents = state.moderationEvents;
   const reputationEvents = mapById(state.reputationEvents ?? []);
+  const requestLogs = mapById(state.requestLogs ?? []);
+  const auditEvents = mapById(state.auditEvents ?? []);
   const idempotencyRecords = new Map(
     (state.idempotencyRecords ?? []).map((record) => [record.key, record])
   );
@@ -136,6 +140,8 @@ export function createStore({ filePath } = {}) {
           escrowEvents: [...escrowEvents.values()],
           moderationEvents,
           reputationEvents: [...reputationEvents.values()],
+          requestLogs: [...requestLogs.values()],
+          auditEvents: [...auditEvents.values()],
           idempotencyRecords: [...idempotencyRecords.values()]
         },
         null,
@@ -162,6 +168,23 @@ export function createStore({ filePath } = {}) {
       createdAt: nowIso()
     };
     offerEvents.set(event.id, event);
+    return event;
+  }
+
+  function recordAuditEvent(input) {
+    const event = {
+      id: input.id ?? `aud_${randomUUID()}`,
+      type: input.type,
+      severity: input.severity ?? 'info',
+      actorAgentId: input.actorAgentId ?? null,
+      sessionId: input.sessionId ?? null,
+      resourceType: input.resourceType ?? null,
+      resourceId: input.resourceId ?? null,
+      requestId: input.requestId ?? null,
+      payload: input.payload ?? {},
+      createdAt: input.createdAt ?? nowIso()
+    };
+    auditEvents.set(event.id, event);
     return event;
   }
 
@@ -316,6 +339,35 @@ export function createStore({ filePath } = {}) {
       reservationId: reservationResult.reservation.id,
       autoAcceptRuleId
     });
+    recordAuditEvent({
+      type: autoAcceptRuleId ? 'offer.auto_accepted' : 'offer.accepted',
+      severity: 'info',
+      actorAgentId,
+      resourceType: 'offer',
+      resourceId: offer.id,
+      payload: {
+        listingId: offer.listingId,
+        tradeId: trade.id,
+        reservationId: reservationResult.reservation.id,
+        autoAcceptRuleId
+      }
+    });
+    recordAuditEvent({
+      type: 'trade.created',
+      severity: 'info',
+      actorAgentId,
+      resourceType: 'trade',
+      resourceId: trade.id,
+      payload: {
+        listingId: trade.listingId,
+        offerId: offer.id,
+        buyerAgentId: trade.buyerAgentId,
+        sellerAgentId: trade.sellerAgentId,
+        state: trade.state,
+        priceUsdc: trade.priceUsdc,
+        quantity: trade.quantity
+      }
+    });
     persist();
     return {
       status: 200,
@@ -377,6 +429,17 @@ export function createStore({ filePath } = {}) {
       };
 
       agents.set(agent.id, agent);
+      recordAuditEvent({
+        type: 'agent.created',
+        severity: 'info',
+        actorAgentId: agent.id,
+        resourceType: 'agent',
+        resourceId: agent.id,
+        payload: {
+          developerId: agent.developerId,
+          verificationTier: agent.verificationTier
+        }
+      });
       persist();
       return agent;
     },
@@ -385,8 +448,68 @@ export function createStore({ filePath } = {}) {
       return agents.get(id) ?? null;
     },
 
+    flagAgent(id, { reason = null, actor = 'admin' } = {}) {
+      const agent = agents.get(id);
+      if (!agent) return null;
+      agent.status = 'flagged';
+      agent.updatedAt = nowIso();
+      recordAuditEvent({
+        type: 'agent.flagged',
+        severity: 'warn',
+        actorAgentId: actor === 'admin' ? null : actor,
+        resourceType: 'agent',
+        resourceId: agent.id,
+        payload: { reason }
+      });
+      persist();
+      return agent;
+    },
+
     listAgents() {
       return [...agents.values()];
+    },
+
+    recordRequestLog(input) {
+      const log = {
+        id: input.id ?? `reqlog_${randomUUID()}`,
+        requestId: input.requestId,
+        method: input.method,
+        path: input.path,
+        route: input.route ?? input.path,
+        status: input.status,
+        latencyMs: input.latencyMs,
+        actorAgentId: input.actorAgentId ?? null,
+        sessionId: input.sessionId ?? null,
+        errorCode: input.errorCode ?? null,
+        ipHash: input.ipHash ?? null,
+        userAgent: input.userAgent ?? null,
+        createdAt: input.createdAt ?? nowIso()
+      };
+      requestLogs.set(log.id, log);
+      persist();
+      return log;
+    },
+
+    recordAuditEvent(input) {
+      const event = recordAuditEvent(input);
+      persist();
+      return event;
+    },
+
+    listRequestLogs({ limit = 100, offset = 0, status } = {}) {
+      return applyListQuery([...requestLogs.values()], { limit, offset, status });
+    },
+
+    listAuditEvents({ limit = 100, offset = 0, type, severity, resourceType, resourceId, actorAgentId } = {}) {
+      return applyListQuery([...auditEvents.values()], {
+        limit,
+        offset,
+        type,
+        severity,
+        resourceType,
+        resourceId,
+        actorAgentId
+      });
     },
 
     listReputationEvents(agentId = null) {
@@ -519,6 +642,26 @@ export function createStore({ filePath } = {}) {
       return listings.get(id) ?? null;
     },
 
+    pauseListing(id, { reason = null, actor = 'admin' } = {}) {
+      const listing = listings.get(id);
+      if (!listing) return null;
+      listing.status = 'paused';
+      listing.updatedAt = nowIso();
+      recordAuditEvent({
+        type: 'listing.paused',
+        severity: 'warn',
+        actorAgentId: actor === 'admin' ? null : actor,
+        resourceType: 'listing',
+        resourceId: listing.id,
+        payload: {
+          sellerAgentId: listing.sellerAgentId,
+          reason
+        }
+      });
+      persist();
+      return listing;
+    },
+
     createListing(input, screening) {
       const now = nowIso();
       const inventory = normalizeListingInventory(input);
@@ -548,6 +691,18 @@ export function createStore({ filePath } = {}) {
         createdAt: now,
         updatedAt: now
       });
+      recordAuditEvent({
+        type: 'listing.created',
+        severity: 'info',
+        actorAgentId: input.sellerAgentId,
+        resourceType: 'listing',
+        resourceId: listing.id,
+        payload: {
+          category: listing.category,
+          assuranceTier: listing.assuranceTier,
+          inventoryType: listing.inventoryType
+        }
+      });
       persist();
       return listing;
     },
@@ -567,6 +722,19 @@ export function createStore({ filePath } = {}) {
       };
 
       moderationEvents.push(event);
+      recordAuditEvent({
+        type: 'policy.blocked_listing',
+        severity: screening.reportable ? 'critical' : 'warn',
+        actorAgentId: input.sellerAgentId ?? null,
+        resourceType: 'moderation_event',
+        resourceId: event.id,
+        payload: {
+          reportable: screening.reportable,
+          matches: screening.matches.map((match) => match.id),
+          category: input.category,
+          assuranceTier: input.assuranceTier
+        }
+      });
       persist();
       return event;
     },
@@ -645,6 +813,21 @@ export function createStore({ filePath } = {}) {
       };
 
       trades.set(trade.id, trade);
+      recordAuditEvent({
+        type: 'trade.created',
+        severity: 'info',
+        actorAgentId: input.buyerAgentId,
+        resourceType: 'trade',
+        resourceId: trade.id,
+        payload: {
+          listingId: trade.listingId,
+          buyerAgentId: trade.buyerAgentId,
+          sellerAgentId: trade.sellerAgentId,
+          state: trade.state,
+          priceUsdc: trade.priceUsdc,
+          quantity: trade.quantity
+        }
+      });
       persist();
       return { trade, reservation: reservationResult.reservation };
     },
@@ -676,6 +859,22 @@ export function createStore({ filePath } = {}) {
       offers.set(offer.id, offer);
       addOfferEvent(offer.id, input.parentOfferId ? 'COUNTERED' : 'OFFER_RECEIVED', offer.createdByAgentId, {
         parentOfferId: input.parentOfferId ?? null
+      });
+      recordAuditEvent({
+        type: input.parentOfferId ? 'offer.countered' : 'offer.created',
+        severity: 'info',
+        actorAgentId: offer.createdByAgentId,
+        resourceType: 'offer',
+        resourceId: offer.id,
+        payload: {
+          listingId: offer.listingId,
+          buyerAgentId: offer.buyerAgentId,
+          sellerAgentId: offer.sellerAgentId,
+          quantity: offer.quantity,
+          unitPriceUsdc: offer.unitPriceUsdc,
+          totalPriceUsdc: offer.totalPriceUsdc,
+          parentOfferId: offer.parentOfferId
+        }
       });
       persist();
       return offer;
@@ -725,6 +924,14 @@ export function createStore({ filePath } = {}) {
       offer.status = offerStatuses.rejected;
       offer.updatedAt = nowIso();
       addOfferEvent(offer.id, 'REJECTED', actorAgentId);
+      recordAuditEvent({
+        type: 'offer.rejected',
+        severity: 'info',
+        actorAgentId,
+        resourceType: 'offer',
+        resourceId: offer.id,
+        payload: { listingId: offer.listingId }
+      });
       persist();
       return offer;
     },
@@ -735,6 +942,14 @@ export function createStore({ filePath } = {}) {
       offer.status = offerStatuses.withdrawn;
       offer.updatedAt = nowIso();
       addOfferEvent(offer.id, 'WITHDRAWN', actorAgentId);
+      recordAuditEvent({
+        type: 'offer.withdrawn',
+        severity: 'info',
+        actorAgentId,
+        resourceType: 'offer',
+        resourceId: offer.id,
+        payload: { listingId: offer.listingId }
+      });
       persist();
       return offer;
     },
@@ -745,6 +960,14 @@ export function createStore({ filePath } = {}) {
       offer.status = offerStatuses.expired;
       offer.updatedAt = nowIso();
       addOfferEvent(offer.id, 'EXPIRED', actorAgentId);
+      recordAuditEvent({
+        type: 'offer.expired',
+        severity: 'info',
+        actorAgentId: actorAgentId === 'system' ? null : actorAgentId,
+        resourceType: 'offer',
+        resourceId: offer.id,
+        payload: { listingId: offer.listingId }
+      });
       persist();
       return offer;
     },
@@ -830,6 +1053,14 @@ export function createStore({ filePath } = {}) {
       rule.enabled = false;
       rule.updatedAt = nowIso();
       rule.disabledByAgentId = actorAgentId;
+      recordAuditEvent({
+        type: 'auto_accept_rule.disabled',
+        severity: 'warn',
+        actorAgentId,
+        resourceType: 'auto_accept_rule',
+        resourceId: rule.id,
+        payload: { listingId: rule.listingId }
+      });
       persist();
       return rule;
     },
@@ -896,7 +1127,34 @@ export function createStore({ filePath } = {}) {
           createdAt: nowIso()
         };
         reputationEvents.set(event.id, event);
+        recordAuditEvent({
+          type: 'reputation.changed',
+          severity: impact.delta < 0 ? 'warn' : 'info',
+          actorAgentId: impact.agentId,
+          resourceType: 'agent',
+          resourceId: impact.agentId,
+          payload: {
+            tradeId: trade.id,
+            role: impact.role,
+            delta: impact.delta,
+            reason: impact.reason,
+            previousScore,
+            newScore
+          }
+        });
       }
+      recordAuditEvent({
+        type: 'trade.transitioned',
+        severity: transition.to === 'DISPUTED' ? 'warn' : 'info',
+        actorAgentId: transition.actor === 'admin' ? null : transition.actor,
+        resourceType: 'trade',
+        resourceId: trade.id,
+        payload: {
+          from: before,
+          to: transition.to,
+          eventType: transition.eventType
+        }
+      });
       persist();
       return trade;
     },
@@ -914,6 +1172,19 @@ export function createStore({ filePath } = {}) {
       };
 
       escrowEvents.set(event.id, event);
+      recordAuditEvent({
+        type: 'escrow.event_created',
+        severity: 'info',
+        actorAgentId: actor === 'admin' ? null : actor,
+        resourceType: 'trade',
+        resourceId: tradeId,
+        payload: {
+          escrowEventId: event.id,
+          escrowType: type,
+          amountUsdc,
+          adapter: event.adapter
+        }
+      });
       persist();
       return event;
     },
