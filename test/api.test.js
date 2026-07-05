@@ -6,7 +6,7 @@ import { getConfig, getSafeRuntimeStatus } from '../src/config.js';
 import { createRateLimiter } from '../src/rate-limit.js';
 import { createApp, handleApiRequest } from '../src/server.js';
 import { createStore } from '../src/store.js';
-import { signSandboxWebhookPayload } from '../src/payments.js';
+import { signSandboxWebhookPayload, usdcToAtomicAmount } from '../src/payments.js';
 import { getTransition } from '../src/trades.js';
 
 process.env.ADMIN_TOKEN ??= 'test-admin-token';
@@ -182,7 +182,18 @@ test('config accepts Render Supabase env group names without exposing secrets in
     supabaseJwksConfigured: true,
     payment: {
       provider: 'sandbox',
-      sandboxWebhookConfigured: false
+      sandboxWebhookConfigured: false,
+      x402: {
+        configured: false,
+        payToConfigured: false,
+        network: 'eip155:84532',
+        asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+        scheme: 'exact',
+        facilitatorHost: 'x402.org',
+        facilitatorRequiresAuth: false,
+        facilitatorBearerConfigured: false,
+        maxTimeoutSeconds: 60
+      }
     },
     maxJsonBodyBytes: 1048576,
     rateLimit: {
@@ -195,6 +206,140 @@ test('config accepts Render Supabase env group names without exposing secrets in
   });
   assert.equal(JSON.stringify(status).includes('secret'), false);
   assert.equal(JSON.stringify(status).includes('publishable'), false);
+});
+
+test('x402 config exposes safe readiness without leaking facilitator bearer token', () => {
+  const status = getSafeRuntimeStatus({
+    PAYMENT_PROVIDER: 'x402',
+    X402_PAY_TO: '0x122F8Fcaf2152420445Aa424E1D8C0306935B5c9',
+    X402_FACILITATOR_URL: 'https://api.cdp.coinbase.com/platform/v2/x402',
+    X402_FACILITATOR_BEARER_TOKEN: 'secret-facilitator-token'
+  });
+
+  assert.deepEqual(status.payment, {
+    provider: 'x402',
+    sandboxWebhookConfigured: false,
+    x402: {
+      configured: true,
+      payToConfigured: true,
+      network: 'eip155:84532',
+      asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+      scheme: 'exact',
+      facilitatorHost: 'api.cdp.coinbase.com',
+      facilitatorRequiresAuth: true,
+      facilitatorBearerConfigured: true,
+      maxTimeoutSeconds: 60
+    }
+  });
+  assert.equal(JSON.stringify(status).includes('secret-facilitator-token'), false);
+});
+
+test('x402 requirements use exact USDC atomic amounts on Base Sepolia', async () => {
+  const previous = {
+    payTo: process.env.X402_PAY_TO,
+    facilitatorUrl: process.env.X402_FACILITATOR_URL
+  };
+  process.env.X402_PAY_TO = '0x122F8Fcaf2152420445Aa424E1D8C0306935B5c9';
+  process.env.X402_FACILITATOR_URL = 'https://x402.org/facilitator';
+  try {
+    const client = createClient();
+    const response = await client.get('/v1/payments/x402/requirements', { amountUsdc: '9.00' });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.provider, 'x402');
+    assert.equal(response.body.paymentRequirements.scheme, 'exact');
+    assert.equal(response.body.paymentRequirements.network, 'eip155:84532');
+    assert.equal(response.body.paymentRequirements.asset, '0x036CbD53842c5426634e7929541eC2318f3dCF7e');
+    assert.equal(response.body.paymentRequirements.amount, '9000000');
+    assert.equal(response.body.paymentRequirements.payTo, process.env.X402_PAY_TO);
+    assert.equal(usdcToAtomicAmount('0.001'), '1000');
+  } finally {
+    if (previous.payTo === undefined) delete process.env.X402_PAY_TO;
+    else process.env.X402_PAY_TO = previous.payTo;
+    if (previous.facilitatorUrl === undefined) delete process.env.X402_FACILITATOR_URL;
+    else process.env.X402_FACILITATOR_URL = previous.facilitatorUrl;
+  }
+});
+
+test('admin x402 settlement test verifies then settles through configured facilitator', async () => {
+  const previousEnv = {
+    payTo: process.env.X402_PAY_TO,
+    facilitatorUrl: process.env.X402_FACILITATOR_URL,
+    token: process.env.X402_FACILITATOR_BEARER_TOKEN
+  };
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  process.env.X402_PAY_TO = '0x122F8Fcaf2152420445Aa424E1D8C0306935B5c9';
+  process.env.X402_FACILITATOR_URL = 'https://facilitator.test/x402';
+  process.env.X402_FACILITATOR_BEARER_TOKEN = 'facilitator-token';
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    const payload = url.endsWith('/verify')
+      ? { isValid: true, payer: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e', extra: {} }
+      : {
+          success: true,
+          payer: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e',
+          transaction: '0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9',
+          network: 'base-sepolia',
+          amount: '9000000',
+          extra: {}
+        };
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  try {
+    const client = createClient();
+    const response = await client.adminPost('/v1/payments/x402/settle', {
+      amountUsdc: '9.00',
+      paymentPayload: {
+        x402Version: 2,
+        accepted: {
+          scheme: 'exact',
+          network: 'eip155:84532',
+          asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+          amount: '9000000',
+          payTo: process.env.X402_PAY_TO,
+          maxTimeoutSeconds: 60,
+          extra: { name: 'USDC', version: '2' }
+        },
+        payload: {
+          signature: '0xsig',
+          authorization: {
+            from: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e',
+            to: process.env.X402_PAY_TO,
+            value: '9000000',
+            validAfter: '0',
+            validBefore: '9999999999',
+            nonce: '0xnonce'
+          }
+        },
+        resource: {
+          url: 'https://ax.test/v1/trades/example/confirm',
+          description: 'Agent Exchange x402 settlement test',
+          mimeType: 'application/json'
+        }
+      }
+    });
+
+    assert.equal(response.status, 202);
+    assert.equal(response.body.settlement.transaction, '0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9');
+    assert.deepEqual(calls.map((call) => call.url), [
+      'https://facilitator.test/x402/verify',
+      'https://facilitator.test/x402/settle'
+    ]);
+    assert.equal(calls[0].options.headers.authorization, 'Bearer facilitator-token');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousEnv.payTo === undefined) delete process.env.X402_PAY_TO;
+    else process.env.X402_PAY_TO = previousEnv.payTo;
+    if (previousEnv.facilitatorUrl === undefined) delete process.env.X402_FACILITATOR_URL;
+    else process.env.X402_FACILITATOR_URL = previousEnv.facilitatorUrl;
+    if (previousEnv.token === undefined) delete process.env.X402_FACILITATOR_BEARER_TOKEN;
+    else process.env.X402_FACILITATOR_BEARER_TOKEN = previousEnv.token;
+  }
 });
 
 test('Tier 0 listings are allowed when they do not violate policy', async () => {
@@ -560,6 +705,39 @@ test('sandbox payment decline leaves trade state unchanged and skips escrow even
   assert.equal(payments.status, 200);
   assert.equal(payments.body.paymentIntents.some((intent) => intent.id === declined.body.paymentIntent.id), true);
   assert.equal(escrowEvents.some((event) => event.tradeId === offered.body.trade.id), false);
+});
+
+test('non-sandbox payment provider cannot silently run trade escrow actions', async () => {
+  const previousProvider = process.env.PAYMENT_PROVIDER;
+  process.env.PAYMENT_PROVIDER = 'x402';
+  try {
+    const client = createClient();
+    const { seller, buyer } = await registerBuyerSeller(client);
+    const created = await client.post('/v1/listings', {
+      sellerAgentId: seller.id,
+      title: 'x402 guarded listing',
+      description: 'Trade escrow should not silently use sandbox while x402 is selected.',
+      category: 'digital_good',
+      assuranceTier: 0,
+      priceUsdc: '12.00'
+    });
+    const offered = await client.post('/v1/trades', {
+      listingId: created.body.listing.id,
+      buyerAgentId: buyer.id,
+      assuranceAcknowledgement: true
+    });
+    const accepted = await client.post(`/v1/trades/${offered.body.trade.id}/accept`, {
+      actorAgentId: seller.id
+    });
+    const payments = await client.adminGet('/v1/admin/payments');
+
+    assert.equal(accepted.status, 503);
+    assert.equal(accepted.body.error, 'trade_payment_provider_not_connected');
+    assert.equal(payments.body.paymentIntents.length, 0);
+  } finally {
+    if (previousProvider === undefined) delete process.env.PAYMENT_PROVIDER;
+    else process.env.PAYMENT_PROVIDER = previousProvider;
+  }
 });
 
 test('sandbox payment webhooks require signatures and dedupe event ids', async () => {

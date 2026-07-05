@@ -23,6 +23,12 @@ RATE_LIMIT_AUTH_MAX_REQUESTS=30
 ADMIN_TOKEN=generate_a_long_random_admin_token
 PAYMENT_PROVIDER=sandbox
 PAYMENT_SANDBOX_WEBHOOK_SECRET=generate_a_long_random_sandbox_webhook_secret
+X402_PAY_TO=your_base_sepolia_receiving_wallet_for_gateway_tests
+X402_NETWORK=eip155:84532
+X402_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+X402_FACILITATOR_URL=https://x402.org/facilitator
+# For CDP facilitator tests only:
+# X402_FACILITATOR_BEARER_TOKEN=generate_or_provide_cdp_facilitator_bearer_token
 ```
 
 `DATABASE_URL` should be the Supabase shared pooler string for hosted Render runtime. For the current `max` project, the verified host is `aws-1-us-west-2.pooler.supabase.com` and the working port is `6543`.

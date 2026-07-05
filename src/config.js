@@ -1,9 +1,16 @@
+import {
+  X402_BASE_SEPOLIA_NETWORK,
+  x402AssetForNetwork
+} from './payments.js';
+
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_JSON_BODY_BYTES = 1_048_576;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
 const DEFAULT_RATE_LIMIT_READ_MAX_REQUESTS = 300;
 const DEFAULT_RATE_LIMIT_WRITE_MAX_REQUESTS = 120;
 const DEFAULT_RATE_LIMIT_AUTH_MAX_REQUESTS = 30;
+const DEFAULT_X402_FACILITATOR_URL = 'https://x402.org/facilitator';
+const CDP_X402_FACILITATOR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402';
 
 function parsePositiveInteger(value, fallback) {
   const parsed = Number(value);
@@ -62,6 +69,14 @@ export function getConfig(env = process.env) {
   const databaseUrl = env.DATABASE_URL ?? '';
   const dataDir = env.DATA_DIR ?? '';
   const paymentProvider = env.PAYMENT_PROVIDER ?? 'sandbox';
+  const x402Network = env.X402_NETWORK ?? X402_BASE_SEPOLIA_NETWORK;
+  const x402FacilitatorUrl =
+    env.X402_FACILITATOR_URL ??
+    (env.X402_USE_CDP_FACILITATOR === 'true' ? CDP_X402_FACILITATOR_URL : DEFAULT_X402_FACILITATOR_URL);
+  const x402FacilitatorBearerToken = env.X402_FACILITATOR_BEARER_TOKEN ?? env.CDP_API_BEARER_TOKEN ?? '';
+  const x402FacilitatorRequiresAuth =
+    env.X402_FACILITATOR_REQUIRES_AUTH === 'true' ||
+    x402FacilitatorUrl.includes('api.cdp.coinbase.com');
 
   return {
     port: parsePositiveInteger(env.PORT, DEFAULT_PORT),
@@ -77,7 +92,18 @@ export function getConfig(env = process.env) {
     databaseUrl,
     payment: {
       provider: paymentProvider,
-      sandboxWebhookConfigured: Boolean(env.PAYMENT_SANDBOX_WEBHOOK_SECRET)
+      sandboxWebhookConfigured: Boolean(env.PAYMENT_SANDBOX_WEBHOOK_SECRET),
+      x402: {
+        configured: Boolean(env.X402_PAY_TO && x402FacilitatorUrl),
+        payTo: env.X402_PAY_TO ?? '',
+        network: x402Network,
+        asset: env.X402_ASSET ?? x402AssetForNetwork(x402Network),
+        scheme: env.X402_SCHEME ?? 'exact',
+        facilitatorUrl: x402FacilitatorUrl,
+        facilitatorRequiresAuth: x402FacilitatorRequiresAuth,
+        facilitatorBearerToken: x402FacilitatorBearerToken,
+        maxTimeoutSeconds: parsePositiveInteger(env.X402_MAX_TIMEOUT_SECONDS, 60)
+      }
     },
     database: databaseConnectionInfo(databaseUrl),
     storageBackend: databaseUrl ? 'postgres' : dataDir ? 'json' : 'memory',
@@ -113,7 +139,23 @@ export function getSafeRuntimeStatus(env = process.env) {
         config.supabase.secretKey
     ),
     supabaseJwksConfigured: Boolean(config.supabase.jwksUrl),
-    payment: config.payment,
+    payment: {
+      provider: config.payment.provider,
+      sandboxWebhookConfigured: config.payment.sandboxWebhookConfigured,
+      x402: {
+        configured: config.payment.x402.configured,
+        payToConfigured: Boolean(config.payment.x402.payTo),
+        network: config.payment.x402.network,
+        asset: config.payment.x402.asset,
+        scheme: config.payment.x402.scheme,
+        facilitatorHost: config.payment.x402.facilitatorUrl
+          ? databaseConnectionInfo(config.payment.x402.facilitatorUrl).host
+          : '',
+        facilitatorRequiresAuth: config.payment.x402.facilitatorRequiresAuth,
+        facilitatorBearerConfigured: Boolean(config.payment.x402.facilitatorBearerToken),
+        maxTimeoutSeconds: config.payment.x402.maxTimeoutSeconds
+      }
+    },
     maxJsonBodyBytes: config.maxJsonBodyBytes,
     rateLimit: config.rateLimit
   };

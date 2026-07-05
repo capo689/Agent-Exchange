@@ -201,9 +201,10 @@ export function createStore({ filePath } = {}) {
     return event;
   }
 
-  function createSandboxPaymentIntent({ trade, transition, action, amountUsdc }) {
+  function createTransitionPaymentIntent({ trade, transition, action, amountUsdc }) {
     const now = nowIso();
-    const status = sandboxStatusForOutcome(transition.paymentOutcome);
+    const provider = transition.paymentProvider ?? 'sandbox';
+    const status = transition.paymentStatus ?? sandboxStatusForOutcome(transition.paymentOutcome);
     const intent = {
       id: `pay_${randomUUID()}`,
       tradeId: trade.id,
@@ -211,8 +212,8 @@ export function createStore({ filePath } = {}) {
       action,
       amountUsdc,
       actor: transition.actor,
-      provider: 'sandbox',
-      providerPaymentId: `sandbox_${randomUUID()}`,
+      provider,
+      providerPaymentId: transition.providerPaymentId ?? `${provider}_${randomUUID()}`,
       status,
       idempotencyKey: transition.paymentIdempotencyKey ?? null,
       metadata: transition.paymentMetadata ?? transition.escrowPayload ?? {},
@@ -1183,7 +1184,7 @@ export function createStore({ filePath } = {}) {
       let escrowEvent = null;
       if (transition.escrowType) {
         const action = paymentActionForEscrowType(transition.escrowType);
-        paymentIntent = createSandboxPaymentIntent({
+        paymentIntent = createTransitionPaymentIntent({
           trade,
           transition,
           action,
@@ -1208,7 +1209,7 @@ export function createStore({ filePath } = {}) {
             type: transition.escrowType,
             amountUsdc: transition.escrowAmountUsdc ?? trade.priceUsdc,
             actor: transition.actor,
-            adapter: 'sandbox',
+            adapter: transition.paymentProvider ?? 'sandbox',
             payload: {
               ...(transition.escrowPayload ?? {}),
               paymentIntentId: paymentIntent.id,

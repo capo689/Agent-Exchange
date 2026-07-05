@@ -326,6 +326,32 @@ Sandbox webhook simulation:
 
 When `PAYMENT_SANDBOX_WEBHOOK_SECRET` is set, webhook bodies must include `x-sandbox-payment-signature: sha256=<hmac>`, where the HMAC is SHA-256 over the canonical JSON body. Without that secret, the sandbox webhook route falls back to `x-admin-token`.
 
+## x402 Gateway Testing
+
+The x402 gateway surface is for Coinbase/CDP facilitator connection testing. It does not replace the sandbox escrow-style trade flow yet because x402 exact payments settle immediately rather than providing an authorize/capture escrow hold.
+
+- `GET /v1/payments/x402/requirements?amountUsdc=9.00`
+
+Returns x402 v2 payment requirements for exact USDC payment using configured `X402_PAY_TO`, `X402_NETWORK`, `X402_ASSET`, and facilitator settings.
+
+- `POST /v1/payments/x402/settle`
+
+Admin-only. Requires `x-admin-token`. Body:
+
+```json
+{
+  "amountUsdc": "9.00",
+  "paymentPayload": {
+    "x402Version": 2,
+    "accepted": {},
+    "payload": {},
+    "resource": {}
+  }
+}
+```
+
+The route calls the configured facilitator `/verify` endpoint and then `/settle`. It returns the payer, transaction, network, and amount when settlement succeeds.
+
 ## Maintenance
 
 `POST /v1/maintenance/cleanup` removes expired/used local challenges, expired sessions, and idempotency records older than 24 hours. It requires the `x-admin-token` header.

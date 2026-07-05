@@ -6,7 +6,12 @@ import { getConfig, getSafeRuntimeStatus } from './config.js';
 import { verifyEd25519Signature } from './crypto.js';
 import { createRequestId, error as logError, info as logInfo, warn as logWarn } from './logger.js';
 import { actorCanAccept, actorCanCounter, actorCanReject, actorCanWithdraw } from './negotiation.js';
-import { verifySandboxWebhookSignature } from './payments.js';
+import {
+  buildX402PaymentRequirements,
+  parseX402PaymentPayload,
+  settleX402Payment,
+  verifySandboxWebhookSignature
+} from './payments.js';
 import { assuranceTiers, getPolicyResponse, screenListing } from './policy.js';
 import { createPostgresStore } from './postgres-store.js';
 import { createRateLimiter } from './rate-limit.js';
@@ -462,6 +467,43 @@ function validateSandboxWebhookInput(input) {
   return errors;
 }
 
+function queryValue(query, name) {
+  if (typeof query?.get === 'function') return query.get(name);
+  return query?.[name] ?? null;
+}
+
+function x402RequirementsForAmount(amountUsdc) {
+  const x402 = getConfig().payment.x402;
+  if (!x402.configured) {
+    return {
+      error: {
+        status: 503,
+        body: {
+          error: 'x402_not_configured',
+          message: 'X402_PAY_TO must be configured before x402 payment requirements can be issued.'
+        }
+      }
+    };
+  }
+
+  try {
+    return {
+      x402,
+      paymentRequirements: buildX402PaymentRequirements({ amountUsdc, x402 })
+    };
+  } catch (error) {
+    return {
+      error: {
+        status: 400,
+        body: {
+          error: 'invalid_x402_payment_requirements',
+          message: error.message
+        }
+      }
+    };
+  }
+}
+
 export async function handleApiRequest(
   { method, pathname, body = {}, headers = {}, query = {} },
   store = defaultStore
@@ -734,6 +776,64 @@ export async function handleApiRequest(
       body: {
         paymentIntent,
         paymentEvents: await store.listPaymentEvents({ paymentIntentId: paymentIntent.id, limit: 100, offset: 0 })
+      }
+    };
+  }
+
+  if (method === 'GET' && pathname === '/v1/payments/x402/requirements') {
+    const amountUsdc = queryValue(query, 'amountUsdc');
+    const result = x402RequirementsForAmount(amountUsdc);
+    if (result.error) return result.error;
+    return {
+      status: 200,
+      body: {
+        provider: 'x402',
+        paymentRequirements: result.paymentRequirements
+      }
+    };
+  }
+
+  if (method === 'POST' && pathname === '/v1/payments/x402/settle') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+
+    const amountUsdc = body.amountUsdc;
+    const requirements = x402RequirementsForAmount(amountUsdc);
+    if (requirements.error) return requirements.error;
+    const paymentPayload =
+      parseX402PaymentPayload(body.paymentPayload) ??
+      parseX402PaymentPayload(getHeader(headers, 'payment-signature')) ??
+      parseX402PaymentPayload(getHeader(headers, 'x-payment'));
+
+    const result = await settleX402Payment({
+      paymentPayload,
+      paymentRequirements: requirements.paymentRequirements,
+      x402: requirements.x402
+    });
+
+    if (!result.ok) {
+      return {
+        status: result.status,
+        body: {
+          error: result.error,
+          paymentRequirements: result.paymentRequirements,
+          verify: result.verify ?? null,
+          settle: result.settle ?? null
+        }
+      };
+    }
+
+    return {
+      status: 202,
+      body: {
+        provider: 'x402',
+        settlement: {
+          payer: result.payer,
+          transaction: result.transaction,
+          network: result.network,
+          amount: result.amount
+        },
+        paymentRequirements: result.paymentRequirements
       }
     };
   }
@@ -1262,6 +1362,19 @@ export async function handleApiRequest(
     const authzError = authorizeTradeAction({ rawAction, trade, actor, body });
     if (authzError) {
       return { status: 403, body: authzError };
+    }
+
+    const paymentConfig = getConfig().payment;
+    if (transition.escrowType && paymentConfig.provider !== 'sandbox') {
+      return {
+        status: 503,
+        body: {
+          error: 'trade_payment_provider_not_connected',
+          provider: paymentConfig.provider,
+          message:
+            'Trade escrow actions still use the sandbox adapter. Use /v1/payments/x402/* for gateway connection tests until x402 escrow semantics are explicitly implemented.'
+        }
+      };
     }
 
     return await store.withIdempotency(

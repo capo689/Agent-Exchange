@@ -1483,7 +1483,8 @@ export function createPostgresStore({ connectionString }) {
         let escrowEvent = null;
         if (transition.escrowType) {
           const action = paymentActionForEscrowType(transition.escrowType);
-          const paymentStatus = sandboxStatusForOutcome(transition.paymentOutcome);
+          const paymentProvider = transition.paymentProvider ?? 'sandbox';
+          const paymentStatus = transition.paymentStatus ?? sandboxStatusForOutcome(transition.paymentOutcome);
           const paymentIntentResult = await client.query(
             `insert into payment_intents (
               id, trade_id, action, amount_usdc, actor, provider, provider_payment_id,
@@ -1496,8 +1497,8 @@ export function createPostgresStore({ connectionString }) {
               action,
               transition.escrowAmountUsdc ?? trade.priceUsdc,
               transition.actor,
-              'sandbox',
-              `sandbox_${randomUUID()}`,
+              paymentProvider,
+              transition.providerPaymentId ?? `${paymentProvider}_${randomUUID()}`,
               paymentStatus,
               transition.paymentIdempotencyKey ?? null,
               jsonb(transition.paymentMetadata ?? transition.escrowPayload ?? {}),
@@ -1543,7 +1544,7 @@ export function createPostgresStore({ connectionString }) {
               transition.escrowType,
               transition.escrowAmountUsdc ?? trade.priceUsdc,
               transition.actor,
-              'sandbox',
+              paymentProvider,
               jsonb({
                 ...(transition.escrowPayload ?? {}),
                 paymentIntentId: paymentIntent.id,

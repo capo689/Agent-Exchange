@@ -152,3 +152,45 @@ POST /v1/payments/sandbox/webhook
 Set `PAYMENT_SANDBOX_WEBHOOK_SECRET` to require `x-sandbox-payment-signature: sha256=<hmac>`. Duplicate webhook `eventId` values return `duplicate: true` without creating a second payment event.
 
 Refund paths must stay available even when future kill switches or circuit breakers are introduced.
+
+## x402 Gateway Connection
+
+x402 is the planned Coinbase/CDP stablecoin payment rail. It is not the active trade escrow adapter yet. x402 exact payments settle immediately, so do not wire it into the accept/confirm escrow state machine until the product decision on hold/capture semantics is explicit.
+
+Required testnet environment:
+
+```txt
+PAYMENT_PROVIDER=sandbox
+X402_PAY_TO=<receiving_wallet_address>
+X402_NETWORK=eip155:84532
+X402_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+X402_FACILITATOR_URL=https://x402.org/facilitator
+```
+
+For CDP facilitator testing, use:
+
+```txt
+X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402
+X402_FACILITATOR_BEARER_TOKEN=<cdp_facilitator_bearer_token>
+```
+
+Quote payment requirements:
+
+```bash
+curl -sS 'http://localhost:8787/v1/payments/x402/requirements?amountUsdc=9.00'
+```
+
+Admin-only settlement probe:
+
+```bash
+curl -sS -X POST http://localhost:8787/v1/payments/x402/settle \
+  -H 'content-type: application/json' \
+  -H 'x-admin-token: <ADMIN_TOKEN>' \
+  -d '{"amountUsdc":"9.00","paymentPayload":{...}}'
+```
+
+Expected behavior:
+
+- Missing `X402_PAY_TO` returns `503 x402_not_configured`.
+- Invalid payment payload returns `402 x402_payment_required` or `402 x402_payment_verification_failed`.
+- Valid payload calls facilitator `/verify`, then `/settle`, and returns payer, transaction, network, and amount.
