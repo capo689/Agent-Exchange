@@ -12,7 +12,8 @@ const totals = [
   ['trades', 'Trades'],
   ['escrowEvents', 'Escrow'],
   ['paymentIntents', 'Payments'],
-  ['reputationEvents', 'Reputation']
+  ['reputationEvents', 'Reputation'],
+  ['feedback', 'Feedback']
 ];
 
 function $(id) {
@@ -196,6 +197,18 @@ function renderModeration(events) {
       <span class="subtle">${esc(time(event.createdAt))}</span>
     </div>
   `).join('') : '<div class="empty">No moderation events</div>';
+}
+
+function renderFeedback(feedback) {
+  $('feedback-stream').innerHTML = feedback.length ? feedback.map((item) => `
+    <div class="event">
+      <strong>${esc(item.topic)} <span class="chip">${esc(item.countForSender ?? '-')} / ${esc(item.limits?.maxMessagesPerSender ?? 20)}</span></strong>
+      <span class="subtle">${esc(item.senderId)}${item.actorAgentId ? ` / ${esc(shortId(item.actorAgentId))}` : ''}</span>
+      <span>${esc(item.text)}</span>
+      <span class="subtle">use ${esc(item.wouldUse)} / escrow ${esc(item.wantsTransactionsEscrow)} / bidding ${esc(item.wantsBidding)}</span>
+      <span class="subtle">${esc(time(item.createdAt))}</span>
+    </div>
+  `).join('') : '<div class="empty">No agent feedback yet</div>';
 }
 
 function renderReconciliation(report) {
@@ -388,6 +401,7 @@ function render(data, reconciliation) {
   renderPaymentSummary(data.breakdowns.paymentIntentsByProvider, data.breakdowns.paymentIntentsByStatus);
   renderPayments(data.recent.paymentIntents ?? [], data.recent.paymentEvents ?? []);
   renderModeration(data.recent.moderationEvents ?? []);
+  renderFeedback(data.recent.feedback ?? []);
   renderReconciliation(reconciliation);
   renderOps(data.recent.auditEvents ?? []);
   renderRequests(data.recent.requestLogs ?? []);

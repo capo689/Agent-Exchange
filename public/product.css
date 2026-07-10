@@ -40,7 +40,9 @@ a {
 }
 
 button,
-input {
+input,
+textarea,
+select {
   font: inherit;
 }
 
@@ -396,6 +398,89 @@ h2 {
   margin-bottom: 28px;
 }
 
+.feedback-section {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(360px, 1.2fr);
+  gap: 18px;
+  align-items: start;
+  margin-bottom: 28px;
+}
+
+.feedback-section p {
+  color: var(--muted);
+  font-size: 17px;
+}
+
+.feedback-form {
+  display: grid;
+  gap: 12px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.55fr);
+  gap: 12px;
+}
+
+.feedback-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.feedback-form input,
+.feedback-form textarea,
+.feedback-form select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0e1110;
+  color: var(--text);
+  padding: 11px 12px;
+}
+
+.feedback-form textarea {
+  min-height: 150px;
+  resize: vertical;
+}
+
+.feedback-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.feedback-options label {
+  min-height: 36px;
+  display: inline-flex;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #111514;
+}
+
+.feedback-options input {
+  width: auto;
+}
+
+.feedback-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.form-status {
+  min-height: 22px;
+  margin: 0;
+  color: var(--mint);
+}
+
 .code-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -470,6 +555,7 @@ code {
   .hero,
   .split,
   .connect-section,
+  .feedback-section,
   .code-grid {
     grid-template-columns: 1fr;
   }
@@ -505,7 +591,8 @@ code {
   }
 
   .signal-grid,
-  .search-form div {
+  .search-form div,
+  .form-grid {
     grid-template-columns: 1fr;
   }
 

@@ -1715,6 +1715,64 @@ test('single-resource lookup endpoints return 404 for missing ids', async () => 
   assert.equal(trade.body.error, 'trade_not_found');
 });
 
+test('public feedback accepts short co-creation notes and admin can read them', async () => {
+  const client = createClient();
+
+  const submitted = await client.postWithoutAuth('/v1/feedback', {
+    senderId: 'agent-feedback-probe',
+    topic: 'transactions_escrow',
+    text: 'I would use this marketplace if escrow, bidding, and settlement status were built into the agent flow.',
+    wouldUse: true,
+    wantsTransactionsEscrow: true,
+    wantsBidding: true,
+    contact: 'optional-agent-contact'
+  });
+
+  assert.equal(submitted.status, 201);
+  assert.equal(submitted.body.ok, true);
+  assert.equal(submitted.body.feedback.countForSender, 1);
+  assert.equal(submitted.body.feedback.limit, 20);
+
+  const feedback = await client.adminGet('/v1/admin/feedback');
+  assert.equal(feedback.status, 200);
+  assert.equal(feedback.body.feedback.length, 1);
+  assert.equal(feedback.body.feedback[0].senderId, 'agent-feedback-probe');
+  assert.equal(feedback.body.feedback[0].topic, 'transactions_escrow');
+  assert.equal(feedback.body.feedback[0].wantsBidding, true);
+  assert.match(feedback.body.feedback[0].text, /escrow/);
+});
+
+test('public feedback enforces size and per-sender count limits', async () => {
+  const client = createClient();
+
+  const oversized = await client.postWithoutAuth('/v1/feedback', {
+    senderId: 'oversized-agent',
+    topic: 'other',
+    text: 'x'.repeat(1001)
+  });
+  assert.equal(oversized.status, 400);
+  assert.equal(oversized.body.error, 'invalid_feedback');
+  assert.ok(oversized.body.errors.some((error) => error.includes('1000')));
+
+  for (let index = 0; index < 20; index += 1) {
+    const accepted = await client.postWithoutAuth('/v1/feedback', {
+      senderId: 'limited-agent',
+      topic: 'would_use',
+      text: `Feedback number ${index}. I am testing whether the feedback cap works for agents.`
+    });
+    assert.equal(accepted.status, 201);
+    assert.equal(accepted.body.feedback.countForSender, index + 1);
+  }
+
+  const capped = await client.postWithoutAuth('/v1/feedback', {
+    senderId: 'limited-agent',
+    topic: 'would_use',
+    text: 'This one should be rejected because the sender already used the beta feedback quota.'
+  });
+  assert.equal(capped.status, 429);
+  assert.equal(capped.body.error, 'feedback_limit_reached');
+});
+
 test('search, listing quality, and agent onboarding expose launch readiness signals', async () => {
   const client = createClient();
   const seller = await registerBasicAgent(client, 'seller_good_launch');

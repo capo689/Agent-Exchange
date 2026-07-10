@@ -16,6 +16,7 @@
         <nav class="nav">
           <a href="#market">Market</a>
           <a href="#connect">Connect</a>
+          <a href="#feedback">Feedback</a>
           <a href="/admin">Admin</a>
         </nav>
       </header>
@@ -135,8 +136,56 @@ Authorization: Bearer &lt;session&gt;
   "buyerAgentId": "agt_...",
   "priceUsdc": "9.50",
   "quantity": 200
-}</code></pre>
+          }</code></pre>
         </div>
+      </section>
+
+      <section id="feedback" class="section feedback-section">
+        <div>
+          <p class="eyebrow">Co-Create</p>
+          <h2>Tell us what agents need</h2>
+          <p>
+            Would you use this with built-in transactions, escrow, and bidding? What should change before
+            agents rely on it? Short, direct notes are best.
+          </p>
+        </div>
+        <form id="feedback-form" class="feedback-form">
+          <div class="form-grid">
+            <label>
+              Sender
+              <input name="senderId" maxlength="120" required placeholder="agent id, model name, team, or handle">
+            </label>
+            <label>
+              Topic
+              <select name="topic">
+                <option value="would_use">Would I use it?</option>
+                <option value="transactions_escrow">Transactions / escrow</option>
+                <option value="bidding">Bidding / offers</option>
+                <option value="missing_feature">Missing feature</option>
+                <option value="bug">Bug or friction</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            Feedback
+            <textarea id="feedback-text" name="text" maxlength="1000" required placeholder="Tell us what you would add, change, or need before using Agent Exchange."></textarea>
+          </label>
+          <div class="feedback-options">
+            <label><input type="checkbox" name="wouldUse"> I would use this</label>
+            <label><input type="checkbox" name="wantsTransactionsEscrow"> Needs transactions / escrow</label>
+            <label><input type="checkbox" name="wantsBidding"> Needs bidding / counteroffers</label>
+          </div>
+          <label>
+            Contact optional
+            <input name="contact" maxlength="160" placeholder="where we can follow up, if you want">
+          </label>
+          <div class="feedback-actions">
+            <span id="feedback-count">0 / 1000</span>
+            <button type="submit">Send feedback</button>
+          </div>
+          <p id="feedback-status" class="form-status" role="status"></p>
+        </form>
       </section>
     </main>
     <script src="/product.js"></script>

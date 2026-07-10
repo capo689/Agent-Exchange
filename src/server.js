@@ -40,6 +40,20 @@ const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
 const paidMarketSnapshotPriceUsdc = '0.01';
 const paidAccessProviders = new Set(['x402', 'manual_usdc']);
+const feedbackLimits = Object.freeze({
+  maxMessagesPerSender: 20,
+  maxTextChars: 1000,
+  maxSenderChars: 120,
+  maxContactChars: 160
+});
+const feedbackTopics = new Set([
+  'would_use',
+  'transactions_escrow',
+  'bidding',
+  'missing_feature',
+  'bug',
+  'other'
+]);
 
 const staticAssets = Object.freeze({
   '/': { path: '../public/product.html', type: 'text/html; charset=utf-8' },
@@ -216,6 +230,54 @@ function validateListingInput(input) {
   }
 
   return errors;
+}
+
+function cleanText(value) {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+function validateFeedbackInput(input) {
+  const errors = [];
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+
+  const senderId = cleanText(input?.senderId);
+  const text = cleanText(input?.text);
+  const contact = cleanText(input?.contact);
+  const topic = cleanText(input?.topic || 'other') || 'other';
+
+  if (!senderId) errors.push('senderId is required');
+  if (senderId.length > feedbackLimits.maxSenderChars) {
+    errors.push(`senderId must be ${feedbackLimits.maxSenderChars} characters or fewer`);
+  }
+  if (!text) errors.push('text is required');
+  if (text.length > feedbackLimits.maxTextChars) {
+    errors.push(`text must be ${feedbackLimits.maxTextChars} characters or fewer`);
+  }
+  if (contact.length > feedbackLimits.maxContactChars) {
+    errors.push(`contact must be ${feedbackLimits.maxContactChars} characters or fewer`);
+  }
+  if (!feedbackTopics.has(topic)) {
+    errors.push(`topic must be one of ${[...feedbackTopics].join(', ')}`);
+  }
+
+  for (const key of ['wouldUse', 'wantsTransactionsEscrow', 'wantsBidding']) {
+    if (input?.[key] !== undefined && typeof input[key] !== 'boolean') {
+      errors.push(`${key} must be boolean`);
+    }
+  }
+
+  return {
+    errors,
+    feedback: {
+      senderId,
+      topic,
+      text,
+      contact: contact || null,
+      wouldUse: input?.wouldUse ?? null,
+      wantsTransactionsEscrow: input?.wantsTransactionsEscrow ?? null,
+      wantsBidding: input?.wantsBidding ?? null
+    }
+  };
 }
 
 function validateTradeInput(input) {
@@ -458,6 +520,21 @@ function recent(items, limit = 12) {
   return [...items]
     .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
     .slice(0, limit);
+}
+
+function feedbackSenderHash(senderKey) {
+  return createHash('sha256').update(String(senderKey)).digest('hex');
+}
+
+function feedbackEventToRecord(event) {
+  return {
+    id: event.id,
+    senderHash: event.resourceId,
+    actorAgentId: event.actorAgentId ?? null,
+    requestId: event.requestId ?? null,
+    createdAt: event.createdAt,
+    ...(event.payload ?? {})
+  };
 }
 
 function isTruthyQuery(value) {
@@ -1644,6 +1721,69 @@ export async function handleApiRequest(
     };
   }
 
+  if (method === 'POST' && pathname === '/v1/feedback') {
+    const { errors, feedback } = validateFeedbackInput(body);
+    if (errors.length) return { status: 400, body: { error: 'invalid_feedback', errors } };
+
+    let actor = null;
+    if (getBearerToken(headers) || getApiKeyToken(headers) || getHeader(headers, 'x-agent-signature')) {
+      const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
+      if (authResult.error) return authResult.error;
+      actor = authResult.auth;
+    }
+
+    const senderKey = actor?.agentId ? `agent:${actor.agentId}` : `sender:${feedback.senderId.toLowerCase()}`;
+    const senderHash = feedbackSenderHash(senderKey);
+    const existing = typeof store.listAuditEvents === 'function'
+      ? await store.listAuditEvents({
+          limit: feedbackLimits.maxMessagesPerSender + 1,
+          offset: 0,
+          type: 'feedback.submitted',
+          resourceType: 'feedback_sender',
+          resourceId: senderHash
+        })
+      : [];
+
+    if (existing.length >= feedbackLimits.maxMessagesPerSender) {
+      return {
+        status: 429,
+        body: {
+          error: 'feedback_limit_reached',
+          message: `Feedback is limited to ${feedbackLimits.maxMessagesPerSender} messages per sender.`,
+          limit: feedbackLimits.maxMessagesPerSender
+        }
+      };
+    }
+
+    const event = await store.recordAuditEvent({
+      type: 'feedback.submitted',
+      severity: 'info',
+      actorAgentId: actor?.agentId ?? null,
+      resourceType: 'feedback_sender',
+      resourceId: senderHash,
+      payload: {
+        ...feedback,
+        source: 'public_beta',
+        characterCount: feedback.text.length,
+        countForSender: existing.length + 1,
+        limits: feedbackLimits
+      }
+    });
+
+    return {
+      status: 201,
+      body: {
+        ok: true,
+        feedback: {
+          id: event.id,
+          countForSender: existing.length + 1,
+          limit: feedbackLimits.maxMessagesPerSender,
+          maxTextChars: feedbackLimits.maxTextChars
+        }
+      }
+    };
+  }
+
   if (method === 'GET' && pathname === '/v1/admin/audit') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
@@ -1661,7 +1801,8 @@ export async function handleApiRequest(
       moderationEvents,
       reputationEvents,
       auditEvents,
-      requestLogs
+      requestLogs,
+      feedbackEvents
     ] = await Promise.all([
       store.listAgents(),
       store.listListings({ limit: dashboardLimit, offset: 0 }),
@@ -1673,7 +1814,8 @@ export async function handleApiRequest(
       store.listModerationEvents(),
       store.listReputationEvents(),
       typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 100, offset: 0 }) : [],
-      typeof store.listRequestLogs === 'function' ? store.listRequestLogs({ limit: 100, offset: 0 }) : []
+      typeof store.listRequestLogs === 'function' ? store.listRequestLogs({ limit: 100, offset: 0 }) : [],
+      typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 50, offset: 0, type: 'feedback.submitted' }) : []
     ]);
     const visible = includeSynthetic
       ? {
@@ -1711,7 +1853,8 @@ export async function handleApiRequest(
           moderationEvents: moderationEvents.length,
           reputationEvents: visibleReputationEvents.length,
           auditEvents: auditEvents.length,
-          requestLogs: requestLogs.length
+          requestLogs: requestLogs.length,
+          feedback: feedbackEvents.length
         },
         breakdowns: {
           listingsByStatus: countBy(visible.listings, 'status'),
@@ -1731,6 +1874,7 @@ export async function handleApiRequest(
           paymentIntents: recent(visiblePaymentIntents),
           paymentEvents: recent(visiblePaymentEvents),
           moderationEvents: recent(moderationEvents),
+          feedback: recent(feedbackEvents).map(feedbackEventToRecord),
           auditEvents: recent(auditEvents),
           requestLogs: recent(requestLogs)
         }
@@ -1750,6 +1894,28 @@ export async function handleApiRequest(
     });
     if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
     return { status: 200, body: paginatedBody('events', await store.listAuditEvents(listQuery.filters), listQuery.filters) };
+  }
+
+  if (method === 'GET' && pathname === '/v1/admin/feedback') {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    const listQuery = parseListQuery(query, {
+      resourceId: {},
+      actorAgentId: {}
+    });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    const events = await store.listAuditEvents({
+      ...listQuery.filters,
+      type: 'feedback.submitted',
+      resourceType: 'feedback_sender'
+    });
+    return {
+      status: 200,
+      body: {
+        ...paginatedBody('feedback', events.map(feedbackEventToRecord), listQuery.filters),
+        limits: feedbackLimits
+      }
+    };
   }
 
   if (method === 'GET' && pathname === '/v1/admin/request-logs') {

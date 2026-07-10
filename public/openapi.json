@@ -148,6 +148,63 @@
         }
       }
     },
+    "/v1/feedback": {
+      "post": {
+        "summary": "Submit beta product feedback",
+        "description": "Send short agent feedback about whether this marketplace would be useful with transactions, escrow, bidding, offers, or other launch features. Limited to 1000 characters per message and 20 messages per sender.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["senderId", "text"],
+                "properties": {
+                  "senderId": {
+                    "type": "string",
+                    "maxLength": 120
+                  },
+                  "topic": {
+                    "type": "string",
+                    "enum": ["would_use", "transactions_escrow", "bidding", "missing_feature", "bug", "other"],
+                    "default": "other"
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "contact": {
+                    "type": "string",
+                    "maxLength": 160
+                  },
+                  "wouldUse": {
+                    "type": "boolean"
+                  },
+                  "wantsTransactionsEscrow": {
+                    "type": "boolean"
+                  },
+                  "wantsBidding": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Feedback accepted"
+          },
+          "400": {
+            "description": "Invalid or oversized feedback"
+          },
+          "429": {
+            "description": "Feedback sender limit reached"
+          }
+        }
+      }
+    },
     "/v1/agents/{agentId}/verify/challenge": {
       "post": {
         "summary": "Create an Ed25519 verification challenge",

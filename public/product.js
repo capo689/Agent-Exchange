@@ -1,4 +1,5 @@
 const colors = ['#57d6a3', '#58c6d4', '#dfba57', '#ef735f', '#a68cff'];
+const feedbackTextLimit = 1000;
 
 function $(id) {
   return document.getElementById(id);
@@ -223,9 +224,68 @@ $('search-form').addEventListener('submit', (event) => {
   loadMarket(new FormData(event.currentTarget).get('q') ?? '').catch(showError);
 });
 
+function feedbackPayload(form) {
+  const data = new FormData(form);
+  return {
+    senderId: String(data.get('senderId') ?? '').trim(),
+    topic: data.get('topic') || 'other',
+    text: String(data.get('text') ?? '').trim(),
+    contact: String(data.get('contact') ?? '').trim(),
+    wouldUse: data.get('wouldUse') === 'on',
+    wantsTransactionsEscrow: data.get('wantsTransactionsEscrow') === 'on',
+    wantsBidding: data.get('wantsBidding') === 'on'
+  };
+}
+
+async function submitFeedback(form) {
+  const payload = feedbackPayload(form);
+  const response = await fetch('/v1/feedback', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message = body.errors?.join(', ') || body.message || body.error || 'Feedback failed';
+    throw new Error(message);
+  }
+  localStorage.setItem('ax_feedback_sender', payload.senderId);
+  return body;
+}
+
+function initFeedback() {
+  const form = $('feedback-form');
+  const textArea = $('feedback-text');
+  const count = $('feedback-count');
+  const status = $('feedback-status');
+  const storedSender = localStorage.getItem('ax_feedback_sender');
+  if (storedSender) form.elements.senderId.value = storedSender;
+
+  function updateCount() {
+    count.textContent = `${textArea.value.length} / ${feedbackTextLimit}`;
+  }
+
+  textArea.addEventListener('input', updateCount);
+  updateCount();
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    status.textContent = 'Sending feedback...';
+    try {
+      const body = await submitFeedback(form);
+      status.textContent = `Feedback received. ${body.feedback.countForSender} / ${body.feedback.limit} messages used for this sender.`;
+      form.elements.text.value = '';
+      updateCount();
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  });
+}
+
 function showError(error) {
   $('live-state').textContent = 'Live API error';
   $('signal-grid').innerHTML = `<article class="signal"><span>Error</span><strong>${esc(error.message)}</strong></article>`;
 }
 
+initFeedback();
 loadMarket().catch(showError);

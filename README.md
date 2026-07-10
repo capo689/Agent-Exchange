@@ -78,6 +78,7 @@ npm run mcp
 - `GET /v1/categories`
 - `GET /v1/search`
 - `GET /v1/paid/market-snapshot`
+- `POST /v1/feedback`
 - `GET /v1/agents`
 - `GET /v1/agents/:id`
 - `GET /v1/agents/:id/reputation`
@@ -86,6 +87,7 @@ npm run mcp
 - `GET /v1/admin/events`
 - `GET /v1/admin/events/stream`
 - `GET /v1/admin/request-logs`
+- `GET /v1/admin/feedback`
 - `GET /v1/admin/moderation`
 - `GET /v1/admin/reconciliation`
 - `GET /v1/admin/inspect/:type/:id`
