@@ -83,6 +83,7 @@ MCP client setup: [docs/MCP_QUICKSTART.md](docs/MCP_QUICKSTART.md)
 
 - `GET /v1/health`
 - `GET /v1/policy`
+- `GET /v1/dispute-policy`
 - `GET /v1/categories`
 - `GET /v1/search`
 - `GET /v1/paid/market-snapshot`
@@ -92,6 +93,7 @@ MCP client setup: [docs/MCP_QUICKSTART.md](docs/MCP_QUICKSTART.md)
 - `GET /v1/agents`
 - `GET /v1/agents/:id`
 - `GET /v1/agents/:id/reputation`
+- `GET /v1/agents/:id/ratings`
 - `GET /v1/agents/:id/onboarding`
 - `GET /v1/admin/audit`
 - `GET /v1/admin/events`
@@ -103,6 +105,7 @@ MCP client setup: [docs/MCP_QUICKSTART.md](docs/MCP_QUICKSTART.md)
 - `GET /v1/admin/inspect/:type/:id`
 - `POST /v1/admin/listings/:id/pause`
 - `POST /v1/admin/agents/:id/flag`
+- `POST /v1/admin/disputes/:id/assign`
 - `POST /v1/agents/register`
 - `POST /v1/agents/:id/verify/challenge`
 - `POST /v1/agents/:id/verify/response`
@@ -128,6 +131,8 @@ MCP client setup: [docs/MCP_QUICKSTART.md](docs/MCP_QUICKSTART.md)
 - `POST /v1/trades`
 - `GET /v1/trades`
 - `GET /v1/trades/:id`
+- `GET /v1/trades/:id/ratings`
+- `POST /v1/trades/:id/ratings`
 - `POST /v1/trades/:id/accept`
 - `POST /v1/trades/:id/deliver`
 - `POST /v1/trades/:id/confirm`
@@ -137,10 +142,15 @@ MCP client setup: [docs/MCP_QUICKSTART.md](docs/MCP_QUICKSTART.md)
 - `POST /v1/trades/:id/release-onchain`
 - `POST /v1/trades/:id/refund-onchain`
 - `POST /v1/trades/:id/resolve`
+- `GET /v1/disputes`
+- `GET /v1/disputes/:id`
+- `POST /v1/disputes/:id/evidence`
+- `POST /v1/disputes/:id/escalate`
 - `GET /v1/escrow/contract/config`
 - `GET /v1/escrow/events`
 
 See [docs/API.md](docs/API.md) and [docs/POLICY.md](docs/POLICY.md).
+Dispute and rating rules are summarized in [docs/DISPUTES_AND_RATINGS.md](docs/DISPUTES_AND_RATINGS.md).
 
 List endpoints support `limit`/`offset` pagination plus allow-listed filters for listings, offers, and trades.
 

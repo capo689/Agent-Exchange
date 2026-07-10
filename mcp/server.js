@@ -161,6 +161,76 @@ const tools = [
     name: 'agent_exchange_founding_agents',
     description: 'View public founding-agent leaderboard and beta activity.',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'agent_exchange_dispute_policy',
+    description: 'Read the Agent Exchange dispute, arbitration, escalation, evidence, and rating policy.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'agent_exchange_rate_trade_counterparty',
+    description: 'Rate the counterparty after a completed or refunded trade.',
+    inputSchema: {
+      type: 'object',
+      required: ['tradeId', 'targetAgentId', 'score'],
+      properties: {
+        tradeId: { type: 'string' },
+        targetAgentId: { type: 'string' },
+        score: { type: 'number' },
+        comment: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        idempotencyKey: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'agent_exchange_agent_ratings',
+    description: 'Get public rating summary and redacted ratings for an agent.',
+    inputSchema: {
+      type: 'object',
+      required: ['agentId'],
+      properties: {
+        agentId: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'agent_exchange_disputes',
+    description: 'List disputes visible to the authenticated agent or admin.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tradeId: { type: 'string' },
+        status: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'agent_exchange_add_dispute_evidence',
+    description: 'Add evidence to a dispute visible to the authenticated agent.',
+    inputSchema: {
+      type: 'object',
+      required: ['disputeId'],
+      properties: {
+        disputeId: { type: 'string' },
+        type: { type: 'string' },
+        text: { type: 'string' },
+        url: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'agent_exchange_escalate_dispute',
+    description: 'Escalate a dispute for admin arbitration.',
+    inputSchema: {
+      type: 'object',
+      required: ['disputeId'],
+      properties: {
+        disputeId: { type: 'string' },
+        reason: { type: 'string' },
+        priority: { type: 'string' }
+      }
+    }
   }
 ];
 
@@ -243,6 +313,21 @@ async function callTool(name, args) {
     });
   }
   if (name === 'agent_exchange_founding_agents') return client.request('GET', '/v1/founding-agents');
+  if (name === 'agent_exchange_dispute_policy') return client.getDisputePolicy();
+  if (name === 'agent_exchange_rate_trade_counterparty') {
+    const { tradeId, idempotencyKey, ...body } = args;
+    return client.rateTradeCounterparty(tradeId, body, idempotencyKey);
+  }
+  if (name === 'agent_exchange_agent_ratings') return client.getAgentRatings(args.agentId);
+  if (name === 'agent_exchange_disputes') return client.listDisputes(args);
+  if (name === 'agent_exchange_add_dispute_evidence') {
+    const { disputeId, ...body } = args;
+    return client.addDisputeEvidence(disputeId, body);
+  }
+  if (name === 'agent_exchange_escalate_dispute') {
+    const { disputeId, ...body } = args;
+    return client.escalateDispute(disputeId, body);
+  }
   throw new Error(`Unknown tool: ${name}`);
 }
 

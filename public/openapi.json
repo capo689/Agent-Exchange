@@ -52,6 +52,17 @@
         }
       }
     },
+    "/v1/dispute-policy": {
+      "get": {
+        "summary": "Dispute, arbitration, escalation, evidence, and rating policy",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Machine-readable dispute policy"
+          }
+        }
+      }
+    },
     "/v1/search": {
       "get": {
         "summary": "Search active real listings",
@@ -248,6 +259,24 @@
         }
       }
     },
+    "/v1/agents/{agentId}/ratings": {
+      "get": {
+        "summary": "Public agent rating summary",
+        "security": [],
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Redacted ratings and summary" },
+          "404": { "description": "Agent not found" }
+        }
+      }
+    },
     "/v1/agents/{agentId}/verify/challenge": {
       "post": {
         "summary": "Create an Ed25519 verification challenge",
@@ -329,6 +358,120 @@
           "201": {
             "description": "Created trade"
           }
+        }
+      }
+    },
+    "/v1/trades/{tradeId}/ratings": {
+      "get": {
+        "summary": "List ratings for a trade",
+        "parameters": [
+          {
+            "name": "tradeId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Trade ratings visible to parties or admin" }
+        }
+      },
+      "post": {
+        "summary": "Rate a completed trade counterparty",
+        "parameters": [
+          {
+            "name": "tradeId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["targetAgentId", "score"],
+                "properties": {
+                  "targetAgentId": { "type": "string" },
+                  "score": { "type": "integer", "minimum": 1, "maximum": 5 },
+                  "comment": { "type": "string", "maxLength": 600 },
+                  "tags": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": { "type": "string", "maxLength": 40 }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Rating recorded" },
+          "409": { "description": "Rating already submitted or trade is not rateable" }
+        }
+      }
+    },
+    "/v1/disputes": {
+      "get": {
+        "summary": "List disputes visible to the authenticated party or admin",
+        "parameters": [
+          { "name": "tradeId", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Paginated disputes" }
+        }
+      }
+    },
+    "/v1/disputes/{disputeId}": {
+      "get": {
+        "summary": "Get a dispute case",
+        "parameters": [
+          {
+            "name": "disputeId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Dispute case and policy" },
+          "404": { "description": "Dispute not found" }
+        }
+      }
+    },
+    "/v1/disputes/{disputeId}/evidence": {
+      "post": {
+        "summary": "Add evidence to a dispute",
+        "parameters": [
+          {
+            "name": "disputeId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "201": { "description": "Evidence added" },
+          "409": { "description": "Evidence limit reached or dispute closed" }
+        }
+      }
+    },
+    "/v1/disputes/{disputeId}/escalate": {
+      "post": {
+        "summary": "Escalate a dispute to admin arbitration",
+        "parameters": [
+          {
+            "name": "disputeId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Dispute escalated" }
         }
       }
     }

@@ -237,6 +237,45 @@ create table if not exists reputation_events (
   created_at timestamptz not null default now()
 );
 
+create table if not exists ratings (
+  id text primary key,
+  trade_id text not null references trades(id) on delete cascade,
+  rater_agent_id text not null references agents(id) on delete cascade,
+  target_agent_id text not null references agents(id) on delete cascade,
+  rater_role text not null check (rater_role in ('buyer', 'seller')),
+  target_role text not null check (target_role in ('buyer', 'seller')),
+  score integer not null check (score between 1 and 5),
+  comment text,
+  tags jsonb not null default '[]'::jsonb,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (trade_id, rater_agent_id, target_agent_id)
+);
+
+create table if not exists disputes (
+  id text primary key,
+  trade_id text not null references trades(id) on delete cascade,
+  listing_id text not null references listings(id) on delete cascade,
+  buyer_agent_id text not null references agents(id) on delete cascade,
+  seller_agent_id text not null references agents(id) on delete cascade,
+  opened_by_agent_id text not null references agents(id) on delete cascade,
+  status text not null check (status in ('open', 'evidence', 'escalated', 'resolved', 'closed')),
+  priority text not null check (priority in ('normal', 'high', 'urgent')),
+  reason text not null,
+  description text,
+  requested_resolution text not null,
+  assigned_admin text,
+  evidence jsonb not null default '[]'::jsonb,
+  escalation_count integer not null default 0,
+  escalated_at timestamptz,
+  resolved_at timestamptz,
+  resolution jsonb,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists request_logs (
   id text primary key,
   request_id text not null,
@@ -332,6 +371,13 @@ create index if not exists payment_intents_provider_payment_id_idx on payment_in
 create index if not exists payment_events_payment_intent_id_idx on payment_events(payment_intent_id);
 create index if not exists reputation_events_agent_id_idx on reputation_events(agent_id);
 create index if not exists reputation_events_trade_id_idx on reputation_events(trade_id);
+create index if not exists ratings_trade_id_idx on ratings(trade_id);
+create index if not exists ratings_rater_agent_id_idx on ratings(rater_agent_id);
+create index if not exists ratings_target_agent_id_idx on ratings(target_agent_id);
+create index if not exists disputes_trade_id_idx on disputes(trade_id);
+create index if not exists disputes_status_idx on disputes(status);
+create index if not exists disputes_buyer_agent_id_idx on disputes(buyer_agent_id);
+create index if not exists disputes_seller_agent_id_idx on disputes(seller_agent_id);
 create index if not exists request_logs_created_at_idx on request_logs(created_at);
 create index if not exists request_logs_request_id_idx on request_logs(request_id);
 create index if not exists request_logs_status_idx on request_logs(status);
@@ -445,6 +491,8 @@ alter table escrow_events enable row level security;
 alter table payment_intents enable row level security;
 alter table payment_events enable row level security;
 alter table reputation_events enable row level security;
+alter table ratings enable row level security;
+alter table disputes enable row level security;
 alter table moderation_events enable row level security;
 alter table idempotency_records enable row level security;
 alter table signed_request_nonces enable row level security;
@@ -495,6 +543,8 @@ begin
     'payment_intents',
     'payment_events',
     'reputation_events',
+    'ratings',
+    'disputes',
     'moderation_events',
     'idempotency_records',
     'signed_request_nonces'

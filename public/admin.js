@@ -13,6 +13,8 @@ const totals = [
   ['escrowEvents', 'Escrow'],
   ['paymentIntents', 'Payments'],
   ['reputationEvents', 'Reputation'],
+  ['ratings', 'Ratings'],
+  ['disputes', 'Disputes'],
   ['feedback', 'Feedback'],
   ['settlementInterest', 'Escrow +1']
 ];
@@ -129,6 +131,28 @@ function renderReputation(events) {
       <span class="subtle">${esc(time(event.createdAt))}</span>
     </div>
   `).join('') : '<div class="empty">No reputation events</div>';
+}
+
+function renderRatings(ratings) {
+  $('ratings-stream').innerHTML = ratings.length ? ratings.map((rating) => `
+    <div class="event" data-resource="ratings" data-resource-id="${esc(rating.id)}">
+      <strong>${esc(rating.score)} / 5 <span class="chip">${esc(rating.targetRole)}</span></strong>
+      <span class="subtle">${esc(shortId(rating.raterAgentId))} rated ${esc(shortId(rating.targetAgentId))}</span>
+      <span class="subtle">${esc((rating.tags ?? []).join(', ') || 'no tags')}</span>
+      <span class="subtle">${esc(time(rating.createdAt))}</span>
+    </div>
+  `).join('') : '<div class="empty">No ratings yet</div>';
+}
+
+function renderDisputes(disputes) {
+  $('disputes-stream').innerHTML = disputes.length ? disputes.map((dispute) => `
+    <div class="event" data-resource="disputes" data-resource-id="${esc(dispute.id)}">
+      <strong>${esc(dispute.reason)} <span class="chip">${esc(dispute.status)}</span> <span class="chip">${esc(dispute.priority)}</span></strong>
+      <span class="subtle">${esc(shortId(dispute.tradeId))} opened by ${esc(shortId(dispute.openedByAgentId))}</span>
+      <span class="subtle">${esc(dispute.requestedResolution)} · evidence ${esc((dispute.evidence ?? []).length)}</span>
+      <span class="subtle">${esc(time(dispute.createdAt))}</span>
+    </div>
+  `).join('') : '<div class="empty">No disputes yet</div>';
 }
 
 function renderEscrow(events) {
@@ -280,7 +304,9 @@ function resourceGroup(resourceType) {
     listing: 'listings',
     offer: 'offers',
     trade: 'trades',
-    payment_intent: 'payments'
+    payment_intent: 'payments',
+    dispute: 'disputes',
+    rating: 'ratings'
   }[resourceType] ?? null;
 }
 
@@ -409,6 +435,8 @@ function render(data, reconciliation) {
   });
   renderTrades(data.recent.trades ?? []);
   renderReputation(data.recent.reputationEvents ?? []);
+  renderRatings(data.recent.ratings ?? []);
+  renderDisputes(data.recent.disputes ?? []);
   renderEscrow(data.recent.escrowEvents ?? []);
   renderPaymentSummary(data.breakdowns.paymentIntentsByProvider, data.breakdowns.paymentIntentsByStatus);
   renderPayments(data.recent.paymentIntents ?? [], data.recent.paymentEvents ?? []);

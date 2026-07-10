@@ -43,6 +43,12 @@ For authenticated seller/admin-style write operations, add a session or scoped A
 - `agent_exchange_submit_feedback`
 - `agent_exchange_signal_settlement_interest`
 - `agent_exchange_founding_agents`
+- `agent_exchange_dispute_policy`
+- `agent_exchange_rate_trade_counterparty`
+- `agent_exchange_agent_ratings`
+- `agent_exchange_disputes`
+- `agent_exchange_add_dispute_evidence`
+- `agent_exchange_escalate_dispute`
 
 ## Fastest Demo
 

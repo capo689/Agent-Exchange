@@ -361,6 +361,50 @@ function reputationEventFromRow(row) {
   };
 }
 
+function ratingFromRow(row, { includeComment = true } = {}) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tradeId: row.trade_id,
+    raterAgentId: row.rater_agent_id,
+    targetAgentId: row.target_agent_id,
+    raterRole: row.rater_role,
+    targetRole: row.target_role,
+    score: row.score,
+    comment: includeComment ? row.comment : null,
+    tags: row.tags ?? [],
+    metadata: row.metadata ?? {},
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
+  };
+}
+
+function disputeFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tradeId: row.trade_id,
+    listingId: row.listing_id,
+    buyerAgentId: row.buyer_agent_id,
+    sellerAgentId: row.seller_agent_id,
+    openedByAgentId: row.opened_by_agent_id,
+    status: row.status,
+    priority: row.priority,
+    reason: row.reason,
+    description: row.description,
+    requestedResolution: row.requested_resolution,
+    assignedAdmin: row.assigned_admin,
+    evidence: row.evidence ?? [],
+    escalationCount: row.escalation_count,
+    escalatedAt: iso(row.escalated_at),
+    resolvedAt: iso(row.resolved_at),
+    resolution: row.resolution ?? null,
+    metadata: row.metadata ?? {},
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
+  };
+}
+
 function requestLogFromRow(row) {
   if (!row) return null;
   return {
@@ -424,6 +468,38 @@ function reservationError(error) {
   if (message.includes('insufficient_inventory')) return { error: 'insufficient_inventory', message: 'Not enough inventory is available.' };
   if (message.includes('listing_not_found')) return { error: 'listing_not_found' };
   return null;
+}
+
+async function ratingSummaryForAgent(query, agentId) {
+  const { rows } = await query(
+    `select target_role, count(*)::int as count, avg(score)::numeric(10,2) as average_score
+     from ratings
+     where target_agent_id = $1
+     group by target_role`,
+    [agentId]
+  );
+  const byRole = {
+    buyer: { count: 0, averageScore: null },
+    seller: { count: 0, averageScore: null }
+  };
+  let count = 0;
+  let weightedTotal = 0;
+  for (const row of rows) {
+    const roleCount = Number(row.count);
+    const averageScore = row.average_score === null ? null : Number(row.average_score);
+    byRole[row.target_role] = {
+      count: roleCount,
+      averageScore
+    };
+    count += roleCount;
+    if (averageScore !== null) weightedTotal += averageScore * roleCount;
+  }
+  return {
+    agentId,
+    count,
+    averageScore: count ? Number((weightedTotal / count).toFixed(2)) : null,
+    byRole
+  };
 }
 
 export function createPostgresStore({ connectionString }) {
@@ -799,6 +875,287 @@ export function createPostgresStore({ connectionString }) {
         ? await query('select * from reputation_events where agent_id = $1 order by created_at desc', [agentId])
         : await query('select * from reputation_events order by created_at desc');
       return rows.map(reputationEventFromRow);
+    },
+
+    async createRating(input) {
+      const trade = await this.getTrade(input.tradeId);
+      if (!trade) return { error: { status: 404, body: { error: 'trade_not_found' } } };
+      const targetRole = trade.buyerAgentId === input.targetAgentId ? 'buyer' : 'seller';
+      const raterRole = trade.buyerAgentId === input.raterAgentId ? 'buyer' : 'seller';
+      try {
+        const { rows } = await query(
+          `insert into ratings (
+            id, trade_id, rater_agent_id, target_agent_id, rater_role, target_role,
+            score, comment, tags, metadata
+          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
+          returning *`,
+          [
+            input.id ?? `rat_${randomUUID()}`,
+            input.tradeId,
+            input.raterAgentId,
+            input.targetAgentId,
+            raterRole,
+            targetRole,
+            Number(input.score),
+            input.comment ?? null,
+            jsonb(input.tags ?? []),
+            jsonb(input.metadata ?? {})
+          ]
+        );
+        const rating = ratingFromRow(rows[0]);
+        await insertAuditEvent({
+          type: 'rating.submitted',
+          severity: rating.score <= 2 ? 'warn' : 'info',
+          actorAgentId: rating.raterAgentId,
+          resourceType: 'rating',
+          resourceId: rating.id,
+          payload: {
+            tradeId: rating.tradeId,
+            targetAgentId: rating.targetAgentId,
+            targetRole: rating.targetRole,
+            score: rating.score,
+            tags: rating.tags
+          }
+        });
+        return { rating, summary: await ratingSummaryForAgent(query, rating.targetAgentId) };
+      } catch (error) {
+        if (error.code === '23505') {
+          return { error: { status: 409, body: { error: 'rating_already_submitted' } } };
+        }
+        throw error;
+      }
+    },
+
+    async listRatings({ agentId, tradeId, includeComments = false, limit = 100, offset = 0 } = {}) {
+      const clauses = [];
+      const params = [];
+      if (agentId) {
+        params.push(agentId);
+        clauses.push(`(target_agent_id = $${params.length} or rater_agent_id = $${params.length})`);
+      }
+      if (tradeId) {
+        params.push(tradeId);
+        clauses.push(`trade_id = $${params.length}`);
+      }
+      params.push(Number(limit), Number(offset));
+      const where = clauses.length ? ` where ${clauses.join(' and ')}` : '';
+      const { rows } = await query(
+        `select * from ratings${where} order by created_at desc limit $${params.length - 1} offset $${params.length}`,
+        params
+      );
+      return rows.map((row) => ratingFromRow(row, { includeComment: includeComments }));
+    },
+
+    async getRatingSummary(agentId) {
+      return ratingSummaryForAgent(query, agentId);
+    },
+
+    async openDispute(input) {
+      const trade = await this.getTrade(input.tradeId);
+      if (!trade) return { error: { status: 404, body: { error: 'trade_not_found' } } };
+      const existing = await this.getDisputeByTradeId(input.tradeId);
+      if (existing && !['resolved', 'closed'].includes(existing.status)) {
+        return { dispute: existing, duplicate: true };
+      }
+      const { rows } = await query(
+        `insert into disputes (
+          id, trade_id, listing_id, buyer_agent_id, seller_agent_id, opened_by_agent_id,
+          status, priority, reason, description, requested_resolution, metadata
+        ) values ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, $11::jsonb)
+        returning *`,
+        [
+          input.id ?? `dsp_${randomUUID()}`,
+          input.tradeId,
+          trade.listingId,
+          trade.buyerAgentId,
+          trade.sellerAgentId,
+          input.openedByAgentId,
+          input.priority ?? 'normal',
+          input.reason ?? 'other',
+          input.description ?? null,
+          input.requestedResolution ?? 'other',
+          jsonb(input.metadata ?? {})
+        ]
+      );
+      const dispute = disputeFromRow(rows[0]);
+      await insertAuditEvent({
+        type: 'dispute.opened',
+        severity: dispute.priority === 'urgent' ? 'critical' : 'warn',
+        actorAgentId: input.openedByAgentId,
+        resourceType: 'dispute',
+        resourceId: dispute.id,
+        payload: {
+          tradeId: dispute.tradeId,
+          reason: dispute.reason,
+          requestedResolution: dispute.requestedResolution,
+          priority: dispute.priority
+        }
+      });
+      return { dispute, duplicate: false };
+    },
+
+    async getDispute(id) {
+      const { rows } = await query('select * from disputes where id = $1', [id]);
+      return disputeFromRow(rows[0]);
+    },
+
+    async getDisputeByTradeId(tradeId) {
+      const { rows } = await query(
+        'select * from disputes where trade_id = $1 order by created_at desc limit 1',
+        [tradeId]
+      );
+      return disputeFromRow(rows[0]);
+    },
+
+    async listDisputes(filters = {}) {
+      const { rows } = await selectFiltered({
+        query,
+        table: 'disputes',
+        columns: {
+          tradeId: 'trade_id',
+          status: 'status',
+          buyerAgentId: 'buyer_agent_id',
+          sellerAgentId: 'seller_agent_id'
+        },
+        filters
+      });
+      return rows.map(disputeFromRow);
+    },
+
+    async addDisputeEvidence(disputeId, { actorAgentId, items, maxItems = 50 }) {
+      const dispute = await this.getDispute(disputeId);
+      if (!dispute) return null;
+      if (dispute.evidence.length + items.length > maxItems) {
+        return {
+          error: {
+            status: 409,
+            body: {
+              error: 'dispute_evidence_limit_reached',
+              limit: maxItems
+            }
+          }
+        };
+      }
+      const now = nowIso();
+      const evidence = items.map((item) => ({
+        id: `evd_${randomUUID()}`,
+        actorAgentId,
+        type: item.type,
+        text: item.text || null,
+        url: item.url ?? null,
+        metadata: item.metadata ?? {},
+        createdAt: now
+      }));
+      const nextStatus = dispute.status === 'open' ? 'evidence' : dispute.status;
+      const { rows } = await query(
+        `update disputes
+         set evidence = $2::jsonb, status = $3, updated_at = now()
+         where id = $1
+         returning *`,
+        [disputeId, jsonb([...dispute.evidence, ...evidence]), nextStatus]
+      );
+      const updated = disputeFromRow(rows[0]);
+      await insertAuditEvent({
+        type: 'dispute.evidence_added',
+        severity: 'info',
+        actorAgentId,
+        resourceType: 'dispute',
+        resourceId: disputeId,
+        payload: {
+          tradeId: updated.tradeId,
+          evidenceCount: evidence.length,
+          status: updated.status
+        }
+      });
+      return { dispute: updated, evidence };
+    },
+
+    async escalateDispute(disputeId, { actorAgentId = null, reason = null, priority = 'high' } = {}) {
+      const { rows } = await query(
+        `update disputes
+         set status = 'escalated',
+             priority = $2,
+             escalation_count = escalation_count + 1,
+             escalated_at = coalesce(escalated_at, now()),
+             updated_at = now()
+         where id = $1
+         returning *`,
+        [disputeId, priority]
+      );
+      const dispute = disputeFromRow(rows[0]);
+      if (!dispute) return null;
+      await insertAuditEvent({
+        type: 'dispute.escalated',
+        severity: priority === 'urgent' ? 'critical' : 'warn',
+        actorAgentId,
+        resourceType: 'dispute',
+        resourceId: disputeId,
+        payload: {
+          tradeId: dispute.tradeId,
+          reason,
+          priority,
+          escalationCount: dispute.escalationCount
+        }
+      });
+      return dispute;
+    },
+
+    async assignDispute(disputeId, { assignedAdmin = 'admin', actor = 'admin' } = {}) {
+      const { rows } = await query(
+        `update disputes
+         set assigned_admin = $2, updated_at = now()
+         where id = $1
+         returning *`,
+        [disputeId, assignedAdmin]
+      );
+      const dispute = disputeFromRow(rows[0]);
+      if (!dispute) return null;
+      await insertAuditEvent({
+        type: 'dispute.assigned',
+        severity: 'info',
+        actorAgentId: eventActor(actor),
+        resourceType: 'dispute',
+        resourceId: disputeId,
+        payload: {
+          assignedAdmin,
+          tradeId: dispute.tradeId
+        }
+      });
+      return dispute;
+    },
+
+    async resolveDisputeByTradeId(tradeId, { resolution, actor = 'admin', notes = null } = {}) {
+      const existing = await this.getDisputeByTradeId(tradeId);
+      if (!existing) return null;
+      const decidedAt = nowIso();
+      const { rows } = await query(
+        `update disputes
+         set status = 'resolved',
+             resolution = $2::jsonb,
+             resolved_at = $3,
+             updated_at = $3
+         where id = $1
+         returning *`,
+        [
+          existing.id,
+          jsonb({ outcome: resolution, notes, actor, decidedAt }),
+          decidedAt
+        ]
+      );
+      const dispute = disputeFromRow(rows[0]);
+      await insertAuditEvent({
+        type: 'dispute.resolved',
+        severity: 'info',
+        actorAgentId: eventActor(actor),
+        resourceType: 'dispute',
+        resourceId: dispute.id,
+        payload: {
+          tradeId,
+          resolution,
+          notes
+        }
+      });
+      return dispute;
     },
 
     async cleanupExpired(now = new Date()) {

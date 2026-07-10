@@ -51,6 +51,22 @@ const settlementInterestLimits = Object.freeze({
   maxMessageChars: 500,
   maxSenderChars: 120
 });
+const ratingLimits = Object.freeze({
+  minScore: 1,
+  maxScore: 5,
+  maxCommentChars: 600,
+  maxTags: 8,
+  maxTagChars: 40
+});
+const disputeLimits = Object.freeze({
+  maxReasonChars: 1000,
+  maxEvidenceTextChars: 2000,
+  maxEvidenceUrlChars: 500,
+  maxEvidenceItemsPerSubmission: 5,
+  maxEvidenceItemsPerDispute: 50,
+  responseWindowHours: 48,
+  adminReviewWindowHours: 24
+});
 const feedbackTopics = new Set([
   'would_use',
   'transactions_escrow',
@@ -59,6 +75,61 @@ const feedbackTopics = new Set([
   'bug',
   'other'
 ]);
+const disputeReasons = new Set([
+  'not_delivered',
+  'not_as_described',
+  'quality_issue',
+  'payment_or_settlement',
+  'policy_violation',
+  'other'
+]);
+const disputeResolutions = new Set(['refund', 'capture', 'split', 'other']);
+const disputePolicy = Object.freeze({
+  version: '2026-07-10',
+  summary:
+    'Agent Exchange records disputes and supports admin arbitration for beta trade records. In free beta, payment and custody remain external, so arbitration affects platform records, trade state, reputation, ratings, and policy actions; it does not itself move external funds.',
+  stages: [
+    {
+      name: 'open',
+      trigger: 'A buyer or seller opens a dispute on a delivered trade.',
+      expectedAction: 'The opening party gives a reason, requested resolution, and any initial evidence.'
+    },
+    {
+      name: 'evidence',
+      trigger: 'Either party adds evidence to the dispute case.',
+      expectedAction: `Parties should respond within ${disputeLimits.responseWindowHours} hours when practical.`
+    },
+    {
+      name: 'escalated',
+      trigger: 'A party or admin escalates the dispute for arbitration.',
+      expectedAction: `Admin review target is ${disputeLimits.adminReviewWindowHours} hours for beta cases.`
+    },
+    {
+      name: 'resolved',
+      trigger: 'Admin records a capture, refund, split, or other decision.',
+      expectedAction: 'The trade, reputation events, ratings context, and audit log are updated.'
+    }
+  ],
+  evidenceRules: {
+    maxItemsPerSubmission: disputeLimits.maxEvidenceItemsPerSubmission,
+    maxItemsPerDispute: disputeLimits.maxEvidenceItemsPerDispute,
+    maxTextChars: disputeLimits.maxEvidenceTextChars,
+    maxUrlChars: disputeLimits.maxEvidenceUrlChars,
+    allowedTypes: ['text', 'url', 'delivery_proof', 'message_log', 'transaction', 'other']
+  },
+  escalation: {
+    allowedBy: ['buyer', 'seller', 'admin'],
+    priorities: ['normal', 'high', 'urgent'],
+    severePolicyNote:
+      'Severe abuse or illegal-content indicators may be preserved, flagged, and reported to appropriate authorities under the platform policy.'
+  },
+  ratingRules: {
+    scale: '1-5',
+    oneRatingPerTradeCounterparty: true,
+    terminalStates: ['CAPTURED', 'REFUNDED'],
+    publicSummary: 'Agent rating summaries are public; raw rating comments are visible to the parties and admins.'
+  }
+});
 
 const staticAssets = Object.freeze({
   '/': { path: '../public/product.html', type: 'text/html; charset=utf-8' },
@@ -312,6 +383,133 @@ function validateSettlementInterestInput(input) {
       paymentRoute: cleanText(input?.paymentRoute) || null
     }
   };
+}
+
+function cleanStringArray(value) {
+  return Array.isArray(value)
+    ? value.map((item) => cleanText(item)).filter(Boolean)
+    : [];
+}
+
+function validateRatingInput(input) {
+  const errors = [];
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  const targetAgentId = cleanText(input?.targetAgentId);
+  const score = Number(input?.score);
+  const comment = cleanText(input?.comment);
+  const tags = cleanStringArray(input?.tags);
+
+  if (!targetAgentId) errors.push('targetAgentId is required');
+  if (!Number.isInteger(score) || score < ratingLimits.minScore || score > ratingLimits.maxScore) {
+    errors.push(`score must be an integer from ${ratingLimits.minScore} to ${ratingLimits.maxScore}`);
+  }
+  if (comment.length > ratingLimits.maxCommentChars) {
+    errors.push(`comment must be ${ratingLimits.maxCommentChars} characters or fewer`);
+  }
+  if (tags.length > ratingLimits.maxTags) {
+    errors.push(`tags must contain ${ratingLimits.maxTags} items or fewer`);
+  }
+  if (tags.some((tag) => tag.length > ratingLimits.maxTagChars)) {
+    errors.push(`tags must be ${ratingLimits.maxTagChars} characters or fewer`);
+  }
+
+  return {
+    errors,
+    rating: {
+      targetAgentId,
+      score,
+      comment: comment || null,
+      tags,
+      metadata: input?.metadata && typeof input.metadata === 'object' ? input.metadata : {}
+    }
+  };
+}
+
+function validateDisputeOpenInput(input) {
+  const errors = [];
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  const rawReason = cleanText(input?.reason || 'other') || 'other';
+  const reason = disputeReasons.has(rawReason) ? rawReason : 'other';
+  const description = cleanText(input?.description || input?.claim || (reason === 'other' && rawReason !== 'other' ? rawReason : ''));
+  const requestedResolution = cleanText(input?.requestedResolution || 'other') || 'other';
+  const priority = cleanText(input?.priority || 'normal') || 'normal';
+
+  if (description.length > disputeLimits.maxReasonChars) {
+    errors.push(`description must be ${disputeLimits.maxReasonChars} characters or fewer`);
+  }
+  if (!disputeResolutions.has(requestedResolution)) {
+    errors.push(`requestedResolution must be one of ${[...disputeResolutions].join(', ')}`);
+  }
+  if (!['normal', 'high', 'urgent'].includes(priority)) {
+    errors.push('priority must be normal, high, or urgent');
+  }
+
+  return {
+    errors,
+    dispute: {
+      reason,
+      description: description || null,
+      requestedResolution,
+      priority,
+      metadata: input?.metadata && typeof input.metadata === 'object' ? input.metadata : {}
+    }
+  };
+}
+
+function normalizeEvidenceItems(input) {
+  const items = Array.isArray(input?.items)
+    ? input.items
+    : [{
+        type: input?.type ?? 'text',
+        text: input?.text ?? input?.description ?? '',
+        url: input?.url ?? null,
+        metadata: input?.metadata ?? {}
+      }];
+
+  return items.map((item) => ({
+    type: cleanText(item?.type || 'text') || 'text',
+    text: cleanText(item?.text || item?.description || ''),
+    url: cleanText(item?.url || '') || null,
+    metadata: item?.metadata && typeof item.metadata === 'object' ? item.metadata : {}
+  }));
+}
+
+function validateDisputeEvidenceInput(input) {
+  const errors = [];
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  const items = normalizeEvidenceItems(input);
+
+  if (items.length === 0) errors.push('at least one evidence item is required');
+  if (items.length > disputeLimits.maxEvidenceItemsPerSubmission) {
+    errors.push(`items must contain ${disputeLimits.maxEvidenceItemsPerSubmission} evidence records or fewer`);
+  }
+  for (const item of items) {
+    if (!disputePolicy.evidenceRules.allowedTypes.includes(item.type)) {
+      errors.push(`evidence type must be one of ${disputePolicy.evidenceRules.allowedTypes.join(', ')}`);
+    }
+    if (!item.text && !item.url) errors.push('each evidence item requires text or url');
+    if (item.text.length > disputeLimits.maxEvidenceTextChars) {
+      errors.push(`evidence text must be ${disputeLimits.maxEvidenceTextChars} characters or fewer`);
+    }
+    if (item.url && item.url.length > disputeLimits.maxEvidenceUrlChars) {
+      errors.push(`evidence url must be ${disputeLimits.maxEvidenceUrlChars} characters or fewer`);
+    }
+  }
+
+  return { errors, evidence: items };
+}
+
+function validateDisputeEscalationInput(input) {
+  const errors = [];
+  const reason = cleanText(input?.reason || '');
+  const priority = cleanText(input?.priority || 'high') || 'high';
+  if (reason.length > disputeLimits.maxReasonChars) {
+    errors.push(`reason must be ${disputeLimits.maxReasonChars} characters or fewer`);
+  }
+  if (!['normal', 'high', 'urgent'].includes(priority)) {
+    errors.push('priority must be normal, high, or urgent');
+  }
+  return { errors, escalation: { reason: reason || null, priority } };
 }
 
 function validateTradeInput(input) {
@@ -1189,6 +1387,10 @@ function isTradeParty(trade, agentId) {
   return trade?.buyerAgentId === agentId || trade?.sellerAgentId === agentId;
 }
 
+function isDisputeParty(dispute, agentId) {
+  return dispute?.buyerAgentId === agentId || dispute?.sellerAgentId === agentId;
+}
+
 function isOfferParty(offer, agentId) {
   return offer?.buyerAgentId === agentId || offer?.sellerAgentId === agentId || offer?.createdByAgentId === agentId;
 }
@@ -1558,6 +1760,19 @@ export async function handleApiRequest(
 
   if (method === 'GET' && pathname === '/v1/policy') {
     return { status: 200, body: getPolicyResponse() };
+  }
+
+  if (method === 'GET' && pathname === '/v1/dispute-policy') {
+    return {
+      status: 200,
+      body: {
+        disputePolicy,
+        limits: {
+          dispute: disputeLimits,
+          rating: ratingLimits
+        }
+      }
+    };
   }
 
   if (method === 'GET' && pathname === '/v1/categories') {
@@ -1990,6 +2205,8 @@ export async function handleApiRequest(
       paymentEvents,
       moderationEvents,
       reputationEvents,
+      ratings,
+      disputes,
       auditEvents,
       requestLogs,
       feedbackEvents,
@@ -2004,6 +2221,8 @@ export async function handleApiRequest(
       typeof store.listPaymentEvents === 'function' ? store.listPaymentEvents({ limit: dashboardLimit, offset: 0 }) : [],
       store.listModerationEvents(),
       store.listReputationEvents(),
+      typeof store.listRatings === 'function' ? store.listRatings({ limit: dashboardLimit, offset: 0, includeComments: false }) : [],
+      typeof store.listDisputes === 'function' ? store.listDisputes({ limit: dashboardLimit, offset: 0 }) : [],
       typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 100, offset: 0 }) : [],
       typeof store.listRequestLogs === 'function' ? store.listRequestLogs({ limit: 100, offset: 0 }) : [],
       typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 50, offset: 0, type: 'feedback.submitted' }) : [],
@@ -2044,6 +2263,8 @@ export async function handleApiRequest(
           paymentEvents: visiblePaymentEvents.length,
           moderationEvents: moderationEvents.length,
           reputationEvents: visibleReputationEvents.length,
+          ratings: ratings.length,
+          disputes: disputes.length,
           auditEvents: auditEvents.length,
           requestLogs: requestLogs.length,
           feedback: feedbackEvents.length,
@@ -2058,6 +2279,8 @@ export async function handleApiRequest(
           paymentIntentsByProvider: countBy(visiblePaymentIntents, 'provider'),
           paymentEventsByProvider: countBy(visiblePaymentEvents, 'provider'),
           requestLogsByStatus: countBy(requestLogs, 'status'),
+          disputesByStatus: countBy(disputes, 'status'),
+          disputesByPriority: countBy(disputes, 'priority'),
           auditEventsBySeverity: countBy(auditEvents, 'severity')
         },
         recent: {
@@ -2067,6 +2290,8 @@ export async function handleApiRequest(
           paymentIntents: recent(visiblePaymentIntents),
           paymentEvents: recent(visiblePaymentEvents),
           moderationEvents: recent(moderationEvents),
+          ratings: recent(ratings),
+          disputes: recent(disputes),
           feedback: recent(feedbackEvents).map(feedbackEventToRecord),
           settlementInterest: recent(settlementInterestEvents).map(settlementInterestEventToRecord),
           auditEvents: recent(auditEvents),
@@ -2538,7 +2763,7 @@ export async function handleApiRequest(
     };
   }
 
-  const adminInspectMatch = pathname.match(/^\/v1\/admin\/inspect\/(agents|listings|offers|trades|payments)\/([^/]+)$/);
+  const adminInspectMatch = pathname.match(/^\/v1\/admin\/inspect\/(agents|listings|offers|trades|payments|disputes|ratings)\/([^/]+)$/);
   if (method === 'GET' && adminInspectMatch) {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
@@ -2548,7 +2773,13 @@ export async function handleApiRequest(
       listings: () => store.getListing(id),
       offers: () => store.getOffer(id),
       trades: () => store.getTrade(id),
-      payments: () => store.getPaymentIntent(id)
+      payments: () => store.getPaymentIntent(id),
+      disputes: () => typeof store.getDispute === 'function' ? store.getDispute(id) : null,
+      ratings: async () => {
+        if (typeof store.listRatings !== 'function') return null;
+        return (await store.listRatings({ limit: 10000, offset: 0, includeComments: true }))
+          .find((rating) => rating.id === id) ?? null;
+      }
     };
     const resource = await readers[type]();
     if (!resource) return { status: 404, body: { error: 'resource_not_found' } };
@@ -2589,6 +2820,19 @@ export async function handleApiRequest(
     return { status: 200, body: { agent } };
   }
 
+  const adminAssignDisputeMatch = pathname.match(/^\/v1\/admin\/disputes\/([^/]+)\/assign$/);
+  if (method === 'POST' && adminAssignDisputeMatch) {
+    const adminError = requireAdmin(headers);
+    if (adminError) return adminError;
+    if (typeof store.assignDispute !== 'function') return { status: 503, body: { error: 'disputes_unavailable' } };
+    const dispute = await store.assignDispute(adminAssignDisputeMatch[1], {
+      assignedAdmin: cleanText(body.assignedAdmin || 'admin') || 'admin',
+      actor: 'admin'
+    });
+    if (!dispute) return { status: 404, body: { error: 'dispute_not_found' } };
+    return { status: 200, body: { dispute } };
+  }
+
   const agentReputationMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/reputation$/);
   if (method === 'GET' && agentReputationMatch) {
     const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
@@ -2601,7 +2845,42 @@ export async function handleApiRequest(
       status: 200,
       body: {
         agent,
+        ratingSummary: typeof store.getRatingSummary === 'function'
+          ? await store.getRatingSummary(agent.id)
+          : null,
         reputationEvents: await store.listReputationEvents(agent.id)
+      }
+    };
+  }
+
+  const agentRatingsMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/ratings$/);
+  if (method === 'GET' && agentRatingsMatch) {
+    const agent = await store.getAgent(agentRatingsMatch[1]);
+    if (!agent) return { status: 404, body: { error: 'agent_not_found' } };
+    const listQuery = parseListQuery(query, { tradeId: {} });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    const ratings = typeof store.listRatings === 'function'
+      ? (await store.listRatings({
+          agentId: agent.id,
+          tradeId: listQuery.filters.tradeId,
+          includeComments: false,
+          limit: listQuery.filters.limit,
+          offset: listQuery.filters.offset
+        })).filter((rating) => rating.targetAgentId === agent.id)
+      : [];
+    return {
+      status: 200,
+      body: {
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          reputationScore: agent.reputationScore,
+          verificationTier: agent.verificationTier
+        },
+        ratingSummary: typeof store.getRatingSummary === 'function'
+          ? await store.getRatingSummary(agent.id)
+          : null,
+        ...paginatedBody('ratings', ratings, listQuery.filters)
       }
     };
   }
@@ -2901,6 +3180,155 @@ export async function handleApiRequest(
     return { status: 200, body: { trade } };
   }
 
+  const tradeRatingsMatch = pathname.match(/^\/v1\/trades\/([^/]+)\/ratings$/);
+  if (method === 'GET' && tradeRatingsMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
+    if (accessResult.error) return accessResult.error;
+    const trade = await store.getTrade(tradeRatingsMatch[1]);
+    if (!trade) return { status: 404, body: { error: 'trade_not_found' } };
+    if (!accessResult.access.isAdmin && !isTradeParty(trade, accessResult.access.agentId)) {
+      return { status: 403, body: { error: 'trade_party_required' } };
+    }
+    const listQuery = parseListQuery(query, {});
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    const ratings = typeof store.listRatings === 'function'
+      ? await store.listRatings({
+          tradeId: trade.id,
+          includeComments: true,
+          limit: listQuery.filters.limit,
+          offset: listQuery.filters.offset
+        })
+      : [];
+    return { status: 200, body: paginatedBody('ratings', ratings, listQuery.filters) };
+  }
+
+  if (method === 'POST' && tradeRatingsMatch) {
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
+    if (authResult.error) return authResult.error;
+    if (typeof store.createRating !== 'function') return { status: 503, body: { error: 'ratings_unavailable' } };
+    const trade = await store.getTrade(tradeRatingsMatch[1]);
+    if (!trade) return { status: 404, body: { error: 'trade_not_found' } };
+    if (!isTradeParty(trade, authResult.auth.agentId)) {
+      return { status: 403, body: { error: 'trade_party_required' } };
+    }
+    if (!['CAPTURED', 'REFUNDED'].includes(trade.state)) {
+      return {
+        status: 409,
+        body: {
+          error: 'trade_not_rateable',
+          state: trade.state,
+          rateableStates: disputePolicy.ratingRules.terminalStates
+        }
+      };
+    }
+    const { errors, rating } = validateRatingInput(body);
+    if (errors.length) return { status: 400, body: { error: 'invalid_rating', errors } };
+    const counterpartyId = authResult.auth.agentId === trade.buyerAgentId ? trade.sellerAgentId : trade.buyerAgentId;
+    if (rating.targetAgentId !== counterpartyId) {
+      return {
+        status: 403,
+        body: {
+          error: 'rating_target_must_be_counterparty',
+          counterpartyId
+        }
+      };
+    }
+    return await store.withIdempotency(
+      {
+        scope: `POST /v1/trades/${trade.id}/ratings`,
+        key: idempotencyKey(headers, body),
+        input: { ...body, raterAgentId: authResult.auth.agentId }
+      },
+      async () => {
+        const result = await store.createRating({
+          ...rating,
+          tradeId: trade.id,
+          raterAgentId: authResult.auth.agentId
+        });
+        if (result.error) return result.error;
+        return { status: 201, body: result };
+      }
+    );
+  }
+
+  if (method === 'GET' && pathname === '/v1/disputes') {
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
+    if (accessResult.error) return accessResult.error;
+    const listQuery = parseListQuery(query, {
+      tradeId: {},
+      status: {},
+      buyerAgentId: {},
+      sellerAgentId: {}
+    });
+    if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
+    const allDisputes = typeof store.listDisputes === 'function'
+      ? await store.listDisputes(scopedQueryForList(listQuery.filters))
+      : [];
+    const visibleDisputes = accessResult.access.isAdmin
+      ? allDisputes
+      : allDisputes.filter((dispute) => isDisputeParty(dispute, accessResult.access.agentId));
+    const disputes = paginateScoped(visibleDisputes, listQuery.filters);
+    return { status: 200, body: paginatedBody('disputes', disputes, listQuery.filters) };
+  }
+
+  const disputeMatch = pathname.match(/^\/v1\/disputes\/([^/]+)$/);
+  if (method === 'GET' && disputeMatch) {
+    const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
+    if (accessResult.error) return accessResult.error;
+    const dispute = typeof store.getDispute === 'function' ? await store.getDispute(disputeMatch[1]) : null;
+    if (!dispute) return { status: 404, body: { error: 'dispute_not_found' } };
+    if (!accessResult.access.isAdmin && !isDisputeParty(dispute, accessResult.access.agentId)) {
+      return { status: 403, body: { error: 'dispute_party_required' } };
+    }
+    return { status: 200, body: { dispute, policy: disputePolicy } };
+  }
+
+  const disputeEvidenceMatch = pathname.match(/^\/v1\/disputes\/([^/]+)\/evidence$/);
+  if (method === 'POST' && disputeEvidenceMatch) {
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
+    if (authResult.error) return authResult.error;
+    if (typeof store.addDisputeEvidence !== 'function') return { status: 503, body: { error: 'disputes_unavailable' } };
+    const dispute = await store.getDispute(disputeEvidenceMatch[1]);
+    if (!dispute) return { status: 404, body: { error: 'dispute_not_found' } };
+    if (!isDisputeParty(dispute, authResult.auth.agentId)) {
+      return { status: 403, body: { error: 'dispute_party_required' } };
+    }
+    if (['resolved', 'closed'].includes(dispute.status)) {
+      return { status: 409, body: { error: 'dispute_closed', status: dispute.status } };
+    }
+    const { errors, evidence } = validateDisputeEvidenceInput(body);
+    if (errors.length) return { status: 400, body: { error: 'invalid_dispute_evidence', errors } };
+    const result = await store.addDisputeEvidence(dispute.id, {
+      actorAgentId: authResult.auth.agentId,
+      items: evidence,
+      maxItems: disputeLimits.maxEvidenceItemsPerDispute
+    });
+    if (result?.error) return result.error;
+    return { status: 201, body: result };
+  }
+
+  const disputeEscalateMatch = pathname.match(/^\/v1\/disputes\/([^/]+)\/escalate$/);
+  if (method === 'POST' && disputeEscalateMatch) {
+    const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
+    if (authResult.error) return authResult.error;
+    if (typeof store.escalateDispute !== 'function') return { status: 503, body: { error: 'disputes_unavailable' } };
+    const dispute = await store.getDispute(disputeEscalateMatch[1]);
+    if (!dispute) return { status: 404, body: { error: 'dispute_not_found' } };
+    if (!isDisputeParty(dispute, authResult.auth.agentId)) {
+      return { status: 403, body: { error: 'dispute_party_required' } };
+    }
+    if (['resolved', 'closed'].includes(dispute.status)) {
+      return { status: 409, body: { error: 'dispute_closed', status: dispute.status } };
+    }
+    const { errors, escalation } = validateDisputeEscalationInput(body);
+    if (errors.length) return { status: 400, body: { error: 'invalid_dispute_escalation', errors } };
+    const escalated = await store.escalateDispute(dispute.id, {
+      actorAgentId: authResult.auth.agentId,
+      ...escalation
+    });
+    return { status: 200, body: { dispute: escalated } };
+  }
+
   if (method === 'GET' && pathname === '/v1/offers') {
     const accessResult = await authorizeAdminOrAgent(headers, store, { method, pathname, query, body });
     if (accessResult.error) return accessResult.error;
@@ -3140,6 +3568,11 @@ export async function handleApiRequest(
       return { status: 403, body: authzError };
     }
 
+    const disputeOpen = rawAction === 'dispute' ? validateDisputeOpenInput(body) : null;
+    if (disputeOpen?.errors.length) {
+      return { status: 400, body: { error: 'invalid_dispute', errors: disputeOpen.errors } };
+    }
+
     const marketplaceTransition = transitionForMarketplaceMode(transition, rawAction);
     if (marketplaceTransition.error) return marketplaceTransition.error;
 
@@ -3234,10 +3667,28 @@ export async function handleApiRequest(
         if (transitionResult?.error) return transitionResult.error;
         if (!transitionResult) return { status: 404, body: { error: 'trade_not_found' } };
 
+        let dispute = null;
+        if (rawAction === 'dispute' && typeof store.openDispute === 'function') {
+          const disputeResult = await store.openDispute({
+            ...disputeOpen.dispute,
+            tradeId,
+            openedByAgentId: actor
+          });
+          if (disputeResult?.error) return disputeResult.error;
+          dispute = disputeResult?.dispute ?? null;
+        } else if (rawAction === 'resolve' && typeof store.resolveDisputeByTradeId === 'function') {
+          dispute = await store.resolveDisputeByTradeId(tradeId, {
+            resolution: body.resolution,
+            notes: cleanText(body.notes || body.reason || '') || null,
+            actor
+          });
+        }
+
         return {
           status: 200,
           body: {
             trade: transitionResult.trade,
+            dispute,
             escrowEvent: transitionResult.escrowEvent,
             paymentIntent: transitionResult.paymentIntent
           }

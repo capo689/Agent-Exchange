@@ -58,6 +58,8 @@ function createInitialState() {
     paymentEvents: [],
     moderationEvents: [],
     reputationEvents: [],
+    ratings: [],
+    disputes: [],
     requestLogs: [],
     auditEvents: [],
     signedRequestNonces: [],
@@ -140,6 +142,8 @@ export function createStore({ filePath } = {}) {
   const paymentEvents = mapById(state.paymentEvents ?? []);
   const moderationEvents = state.moderationEvents;
   const reputationEvents = mapById(state.reputationEvents ?? []);
+  const ratings = mapById(state.ratings ?? []);
+  const disputes = mapById(state.disputes ?? []);
   const requestLogs = mapById(state.requestLogs ?? []);
   const auditEvents = mapById(state.auditEvents ?? []);
   const signedRequestNonces = new Map(
@@ -174,6 +178,8 @@ export function createStore({ filePath } = {}) {
           paymentEvents: [...paymentEvents.values()],
           moderationEvents,
           reputationEvents: [...reputationEvents.values()],
+          ratings: [...ratings.values()],
+          disputes: [...disputes.values()],
           requestLogs: [...requestLogs.values()],
           auditEvents: [...auditEvents.values()],
           signedRequestNonces: [...signedRequestNonces.values()],
@@ -553,6 +559,42 @@ export function createStore({ filePath } = {}) {
     };
   }
 
+  function ratingSummaryForAgent(agentId) {
+    const agentRatings = [...ratings.values()].filter((rating) => rating.targetAgentId === agentId);
+    const byRole = {};
+    for (const role of ['buyer', 'seller']) {
+      const roleRatings = agentRatings.filter((rating) => rating.targetRole === role);
+      const average = roleRatings.length
+        ? roleRatings.reduce((sum, rating) => sum + Number(rating.score), 0) / roleRatings.length
+        : null;
+      byRole[role] = {
+        count: roleRatings.length,
+        averageScore: average === null ? null : Number(average.toFixed(2))
+      };
+    }
+    const average = agentRatings.length
+      ? agentRatings.reduce((sum, rating) => sum + Number(rating.score), 0) / agentRatings.length
+      : null;
+    return {
+      agentId,
+      count: agentRatings.length,
+      averageScore: average === null ? null : Number(average.toFixed(2)),
+      byRole
+    };
+  }
+
+  function visibleRating(rating, { includeComment = false } = {}) {
+    return {
+      ...rating,
+      comment: includeComment ? rating.comment : null
+    };
+  }
+
+  function findOpenDisputeForTrade(tradeId) {
+    return [...disputes.values()]
+      .find((dispute) => dispute.tradeId === tradeId && !['resolved', 'closed'].includes(dispute.status)) ?? null;
+  }
+
   return {
     createAgent(input) {
       const now = nowIso();
@@ -657,6 +699,242 @@ export function createStore({ filePath } = {}) {
       return [...reputationEvents.values()]
         .filter((event) => !agentId || event.agentId === agentId)
         .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    },
+
+    createRating(input) {
+      const trade = trades.get(input.tradeId);
+      if (!trade) return { error: { status: 404, body: { error: 'trade_not_found' } } };
+      const existing = [...ratings.values()].find((rating) => (
+        rating.tradeId === input.tradeId &&
+        rating.raterAgentId === input.raterAgentId &&
+        rating.targetAgentId === input.targetAgentId
+      ));
+      if (existing) {
+        return { error: { status: 409, body: { error: 'rating_already_submitted', rating: existing } } };
+      }
+      const targetRole = trade.buyerAgentId === input.targetAgentId ? 'buyer' : 'seller';
+      const raterRole = trade.buyerAgentId === input.raterAgentId ? 'buyer' : 'seller';
+      const rating = {
+        id: input.id ?? `rat_${randomUUID()}`,
+        tradeId: input.tradeId,
+        raterAgentId: input.raterAgentId,
+        targetAgentId: input.targetAgentId,
+        raterRole,
+        targetRole,
+        score: Number(input.score),
+        comment: input.comment ?? null,
+        tags: input.tags ?? [],
+        metadata: input.metadata ?? {},
+        createdAt: nowIso(),
+        updatedAt: nowIso()
+      };
+      ratings.set(rating.id, rating);
+      recordAuditEvent({
+        type: 'rating.submitted',
+        severity: rating.score <= 2 ? 'warn' : 'info',
+        actorAgentId: rating.raterAgentId,
+        resourceType: 'rating',
+        resourceId: rating.id,
+        payload: {
+          tradeId: rating.tradeId,
+          targetAgentId: rating.targetAgentId,
+          targetRole: rating.targetRole,
+          score: rating.score,
+          tags: rating.tags
+        }
+      });
+      persist();
+      return { rating, summary: ratingSummaryForAgent(rating.targetAgentId) };
+    },
+
+    listRatings({ agentId, tradeId, includeComments = false, limit = 100, offset = 0 } = {}) {
+      const scoped = [...ratings.values()]
+        .filter((rating) => !agentId || rating.targetAgentId === agentId || rating.raterAgentId === agentId)
+        .filter((rating) => !tradeId || rating.tradeId === tradeId)
+        .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
+        .slice(offset, offset + limit)
+        .map((rating) => visibleRating(rating, { includeComment: includeComments }));
+      return scoped;
+    },
+
+    getRatingSummary(agentId) {
+      return ratingSummaryForAgent(agentId);
+    },
+
+    openDispute(input) {
+      const trade = trades.get(input.tradeId);
+      if (!trade) return { error: { status: 404, body: { error: 'trade_not_found' } } };
+      const existing = findOpenDisputeForTrade(input.tradeId);
+      if (existing) return { dispute: existing, duplicate: true };
+      const now = nowIso();
+      const dispute = {
+        id: input.id ?? `dsp_${randomUUID()}`,
+        tradeId: input.tradeId,
+        listingId: trade.listingId,
+        buyerAgentId: trade.buyerAgentId,
+        sellerAgentId: trade.sellerAgentId,
+        openedByAgentId: input.openedByAgentId,
+        status: 'open',
+        priority: input.priority ?? 'normal',
+        reason: input.reason ?? 'other',
+        description: input.description ?? null,
+        requestedResolution: input.requestedResolution ?? 'other',
+        assignedAdmin: null,
+        evidence: [],
+        escalationCount: 0,
+        escalatedAt: null,
+        resolvedAt: null,
+        resolution: null,
+        metadata: input.metadata ?? {},
+        createdAt: now,
+        updatedAt: now
+      };
+      disputes.set(dispute.id, dispute);
+      recordAuditEvent({
+        type: 'dispute.opened',
+        severity: dispute.priority === 'urgent' ? 'critical' : 'warn',
+        actorAgentId: input.openedByAgentId,
+        resourceType: 'dispute',
+        resourceId: dispute.id,
+        payload: {
+          tradeId: dispute.tradeId,
+          reason: dispute.reason,
+          requestedResolution: dispute.requestedResolution,
+          priority: dispute.priority
+        }
+      });
+      persist();
+      return { dispute, duplicate: false };
+    },
+
+    getDispute(id) {
+      return disputes.get(id) ?? null;
+    },
+
+    getDisputeByTradeId(tradeId) {
+      return [...disputes.values()]
+        .filter((dispute) => dispute.tradeId === tradeId)
+        .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))[0] ?? null;
+    },
+
+    listDisputes(filters = {}) {
+      return applyListQuery([...disputes.values()], filters);
+    },
+
+    addDisputeEvidence(disputeId, { actorAgentId, items, maxItems = 50 }) {
+      const dispute = disputes.get(disputeId);
+      if (!dispute) return null;
+      if (dispute.evidence.length + items.length > maxItems) {
+        return {
+          error: {
+            status: 409,
+            body: {
+              error: 'dispute_evidence_limit_reached',
+              limit: maxItems
+            }
+          }
+        };
+      }
+      const now = nowIso();
+      const evidence = items.map((item) => ({
+        id: `evd_${randomUUID()}`,
+        actorAgentId,
+        type: item.type,
+        text: item.text || null,
+        url: item.url ?? null,
+        metadata: item.metadata ?? {},
+        createdAt: now
+      }));
+      dispute.evidence.push(...evidence);
+      if (dispute.status === 'open') dispute.status = 'evidence';
+      dispute.updatedAt = now;
+      recordAuditEvent({
+        type: 'dispute.evidence_added',
+        severity: 'info',
+        actorAgentId,
+        resourceType: 'dispute',
+        resourceId: dispute.id,
+        payload: {
+          tradeId: dispute.tradeId,
+          evidenceCount: evidence.length,
+          status: dispute.status
+        }
+      });
+      persist();
+      return { dispute, evidence };
+    },
+
+    escalateDispute(disputeId, { actorAgentId = null, reason = null, priority = 'high' } = {}) {
+      const dispute = disputes.get(disputeId);
+      if (!dispute) return null;
+      dispute.status = 'escalated';
+      dispute.priority = priority;
+      dispute.escalationCount += 1;
+      dispute.escalatedAt = dispute.escalatedAt ?? nowIso();
+      dispute.updatedAt = nowIso();
+      recordAuditEvent({
+        type: 'dispute.escalated',
+        severity: priority === 'urgent' ? 'critical' : 'warn',
+        actorAgentId,
+        resourceType: 'dispute',
+        resourceId: dispute.id,
+        payload: {
+          tradeId: dispute.tradeId,
+          reason,
+          priority,
+          escalationCount: dispute.escalationCount
+        }
+      });
+      persist();
+      return dispute;
+    },
+
+    assignDispute(disputeId, { assignedAdmin = 'admin', actor = 'admin' } = {}) {
+      const dispute = disputes.get(disputeId);
+      if (!dispute) return null;
+      dispute.assignedAdmin = assignedAdmin;
+      dispute.updatedAt = nowIso();
+      recordAuditEvent({
+        type: 'dispute.assigned',
+        severity: 'info',
+        actorAgentId: actor === 'admin' ? null : actor,
+        resourceType: 'dispute',
+        resourceId: dispute.id,
+        payload: {
+          assignedAdmin,
+          tradeId: dispute.tradeId
+        }
+      });
+      persist();
+      return dispute;
+    },
+
+    resolveDisputeByTradeId(tradeId, { resolution, actor = 'admin', notes = null } = {}) {
+      const dispute = this.getDisputeByTradeId(tradeId);
+      if (!dispute) return null;
+      dispute.status = 'resolved';
+      dispute.resolution = {
+        outcome: resolution,
+        notes,
+        actor,
+        decidedAt: nowIso()
+      };
+      dispute.resolvedAt = dispute.resolution.decidedAt;
+      dispute.updatedAt = dispute.resolution.decidedAt;
+      recordAuditEvent({
+        type: 'dispute.resolved',
+        severity: 'info',
+        actorAgentId: actor === 'admin' ? null : actor,
+        resourceType: 'dispute',
+        resourceId: dispute.id,
+        payload: {
+          tradeId,
+          resolution,
+          notes
+        }
+      });
+      persist();
+      return dispute;
     },
 
     cleanupExpired(now = new Date()) {

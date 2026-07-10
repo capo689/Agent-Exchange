@@ -1664,6 +1664,79 @@ test('dispute resolution is admin-only in the current prototype', async () => {
   assert.equal(adminResolve.body.trade.state, 'REFUNDED');
 });
 
+test('dispute policy and escalation create an auditable arbitration case', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const listing = await client.post('/v1/listings', {
+    sellerAgentId: seller.id,
+    title: 'Escalation listing',
+    description: 'Delivery can be challenged with evidence.',
+    category: 'digital_good',
+    assuranceTier: 0,
+    priceUsdc: '7.00'
+  });
+  const trade = await client.post('/v1/trades', {
+    listingId: listing.body.listing.id,
+    buyerAgentId: buyer.id,
+    assuranceAcknowledgement: true
+  });
+  await client.post(`/v1/trades/${trade.body.trade.id}/accept`, { actorAgentId: seller.id });
+  await client.post(`/v1/trades/${trade.body.trade.id}/deliver`, { actorAgentId: seller.id });
+
+  const policy = await client.get('/v1/dispute-policy');
+  assert.equal(policy.status, 200);
+  assert.equal(policy.body.disputePolicy.ratingRules.oneRatingPerTradeCounterparty, true);
+
+  const opened = await client.post(`/v1/trades/${trade.body.trade.id}/dispute`, {
+    actorAgentId: buyer.id,
+    reason: 'not_as_described',
+    description: 'The delivered asset does not match the listing.',
+    requestedResolution: 'refund',
+    priority: 'high'
+  });
+  assert.equal(opened.status, 200);
+  assert.equal(opened.body.trade.state, 'DISPUTED');
+  assert.equal(opened.body.dispute.status, 'open');
+
+  const evidence = await client.post(`/v1/disputes/${opened.body.dispute.id}/evidence`, {
+    actorAgentId: buyer.id,
+    type: 'message_log',
+    text: 'Seller promised PNG delivery; delivered a broken archive.'
+  });
+  assert.equal(evidence.status, 201);
+  assert.equal(evidence.body.dispute.status, 'evidence');
+  assert.equal(evidence.body.evidence.length, 1);
+
+  const escalated = await client.post(`/v1/disputes/${opened.body.dispute.id}/escalate`, {
+    actorAgentId: buyer.id,
+    reason: 'No response after evidence submission.',
+    priority: 'urgent'
+  });
+  assert.equal(escalated.status, 200);
+  assert.equal(escalated.body.dispute.status, 'escalated');
+  assert.equal(escalated.body.dispute.priority, 'urgent');
+
+  const assigned = await client.adminPost(`/v1/admin/disputes/${opened.body.dispute.id}/assign`, {
+    assignedAdmin: 'adam'
+  });
+  assert.equal(assigned.status, 200);
+  assert.equal(assigned.body.dispute.assignedAdmin, 'adam');
+
+  const adminDisputes = await client.adminGet('/v1/disputes');
+  assert.equal(adminDisputes.status, 200);
+  assert.equal(adminDisputes.body.disputes.some((item) => item.id === opened.body.dispute.id), true);
+
+  const resolved = await client.adminPost(`/v1/trades/${trade.body.trade.id}/resolve`, {
+    actorRole: 'admin',
+    resolution: 'refund',
+    notes: 'Evidence favored buyer.'
+  });
+  assert.equal(resolved.status, 200);
+  assert.equal(resolved.body.trade.state, 'REFUNDED');
+  assert.equal(resolved.body.dispute.status, 'resolved');
+  assert.equal(resolved.body.dispute.resolution.outcome, 'refund');
+});
+
 test('buyer can make best offer and seller can counter', async () => {
   const client = createClient();
   const { seller, buyer } = await registerBuyerSeller(client);
@@ -2116,6 +2189,63 @@ test('completed trades create auditable reputation events and update scores', as
   assert.equal(audit.body.breakdowns.tradesByState.CAPTURED, 1);
   assert.equal(audit.body.recent.reputationEvents.length, 2);
   assert.ok(audit.body.totals.auditEvents >= 1);
+});
+
+test('buyers and sellers can rate completed trade counterparties once', async () => {
+  const client = createClient();
+  const { seller, buyer } = await registerBuyerSeller(client);
+  const listing = await createFungibleListing(client, seller);
+  const trade = await client.post('/v1/trades', {
+    listingId: listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 100,
+    unitPriceUsdc: '0.010',
+    assuranceAcknowledgement: true
+  });
+  await client.post(`/v1/trades/${trade.body.trade.id}/accept`, { actorAgentId: seller.id });
+  await client.post(`/v1/trades/${trade.body.trade.id}/deliver`, { actorAgentId: seller.id });
+  await client.post(`/v1/trades/${trade.body.trade.id}/confirm`, { actorAgentId: buyer.id });
+
+  const buyerRatesSeller = await client.post(`/v1/trades/${trade.body.trade.id}/ratings`, {
+    targetAgentId: seller.id,
+    score: 5,
+    comment: 'Delivered cleanly.',
+    tags: ['delivered', 'clear']
+  }, { 'idempotency-key': 'buyer-rates-seller-1', ...buyer.authHeaders });
+  assert.equal(buyerRatesSeller.status, 201);
+  assert.equal(buyerRatesSeller.body.rating.targetRole, 'seller');
+  assert.equal(buyerRatesSeller.body.summary.averageScore, 5);
+
+  const sellerRatesBuyer = await client.post(`/v1/trades/${trade.body.trade.id}/ratings`, {
+    targetAgentId: buyer.id,
+    score: 4,
+    comment: 'Fast confirmation.'
+  }, { 'idempotency-key': 'seller-rates-buyer-1', ...seller.authHeaders });
+  assert.equal(sellerRatesBuyer.status, 201);
+  assert.equal(sellerRatesBuyer.body.rating.targetRole, 'buyer');
+
+  const duplicate = await client.post(`/v1/trades/${trade.body.trade.id}/ratings`, {
+    targetAgentId: seller.id,
+    score: 4
+  }, buyer.authHeaders);
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.error, 'rating_already_submitted');
+
+  const wrongTarget = await client.post(`/v1/trades/${trade.body.trade.id}/ratings`, {
+    targetAgentId: buyer.id,
+    score: 5
+  }, buyer.authHeaders);
+  assert.equal(wrongTarget.status, 403);
+  assert.equal(wrongTarget.body.error, 'rating_target_must_be_counterparty');
+
+  const sellerRatings = await client.get(`/v1/agents/${seller.id}/ratings`);
+  assert.equal(sellerRatings.status, 200);
+  assert.equal(sellerRatings.body.ratingSummary.byRole.seller.averageScore, 5);
+  assert.equal(sellerRatings.body.ratings[0].comment, null);
+
+  const privateTradeRatings = await client.getWithHeaders(`/v1/trades/${trade.body.trade.id}/ratings`, buyer.authHeaders);
+  assert.equal(privateTradeRatings.status, 200);
+  assert.equal(privateTradeRatings.body.ratings.some((rating) => rating.comment === 'Delivered cleanly.'), true);
 });
 
 test('admin ops endpoints expose events, drilldowns, and controls', async () => {

@@ -174,6 +174,14 @@ export class AgentExchangeClient {
     return this.request('GET', `/v1/agents/${agentId}/reputation`);
   }
 
+  getAgentRatings(agentId, filters = {}) {
+    return this.request('GET', `/v1/agents/${agentId}/ratings${queryString(filters)}`);
+  }
+
+  getDisputePolicy() {
+    return this.request('GET', '/v1/dispute-policy');
+  }
+
   getAgentOnboarding(agentId) {
     return this.request('GET', `/v1/agents/${agentId}/onboarding`);
   }
@@ -301,6 +309,19 @@ export class AgentExchangeClient {
     return this.request('GET', `/v1/trades/${tradeId}`);
   }
 
+  listTradeRatings(tradeId, filters = {}) {
+    return this.request('GET', `/v1/trades/${tradeId}/ratings${queryString(filters)}`);
+  }
+
+  rateTradeCounterparty(tradeId, input, idempotencyKey) {
+    return this.request(
+      'POST',
+      `/v1/trades/${tradeId}/ratings`,
+      input,
+      idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}
+    );
+  }
+
   tradeAction(tradeId, action, body, idempotencyKey) {
     return this.request(
       'POST',
@@ -308,5 +329,21 @@ export class AgentExchangeClient {
       body,
       idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}
     );
+  }
+
+  listDisputes(filters = {}) {
+    return this.request('GET', `/v1/disputes${queryString(filters)}`);
+  }
+
+  getDispute(disputeId) {
+    return this.request('GET', `/v1/disputes/${disputeId}`);
+  }
+
+  addDisputeEvidence(disputeId, input) {
+    return this.request('POST', `/v1/disputes/${disputeId}/evidence`, input);
+  }
+
+  escalateDispute(disputeId, input) {
+    return this.request('POST', `/v1/disputes/${disputeId}/escalate`, input);
   }
 }
