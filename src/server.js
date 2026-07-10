@@ -41,8 +41,12 @@ const MAX_LIST_LIMIT = 100;
 const paidMarketSnapshotPriceUsdc = '0.01';
 const paidAccessProviders = new Set(['x402', 'manual_usdc']);
 
-const adminAssets = Object.freeze({
-  '/': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
+const staticAssets = Object.freeze({
+  '/': { path: '../public/product.html', type: 'text/html; charset=utf-8' },
+  '/product.css': { path: '../public/product.css', type: 'text/css; charset=utf-8' },
+  '/product.js': { path: '../public/product.js', type: 'application/javascript; charset=utf-8' },
+  '/llms.txt': { path: '../public/llms.txt', type: 'text/plain; charset=utf-8' },
+  '/openapi.json': { path: '../public/openapi.json', type: 'application/json; charset=utf-8' },
   '/admin': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
   '/admin/': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
   '/admin/admin.css': { path: '../public/admin.css', type: 'text/css; charset=utf-8' },
@@ -79,8 +83,8 @@ function json(res, status, payload, extraHeaders = {}) {
   res.end(body);
 }
 
-async function serveAdminAsset(pathname, res) {
-  const asset = adminAssets[pathname];
+async function serveStaticAsset(pathname, res) {
+  const asset = staticAssets[pathname];
   if (!asset) return false;
 
   const body = await readFile(new URL(asset.path, import.meta.url));
@@ -2909,7 +2913,7 @@ export function createApp({
     const startedAt = performance.now();
     try {
       const url = new URL(req.url, 'http://localhost');
-      if (req.method === 'GET' && await serveAdminAsset(url.pathname, res)) {
+      if (req.method === 'GET' && await serveStaticAsset(url.pathname, res)) {
         const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
         logInfo('http.request', {
           requestId,

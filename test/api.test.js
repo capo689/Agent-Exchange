@@ -2515,10 +2515,13 @@ test('http server returns overload before flooding queued work', async () => {
   assert.equal(auditEvents.some((event) => event.type === 'http.request_overloaded'), true);
 });
 
-test('http server serves the admin dashboard shell', async () => {
+test('http server serves the public product shell and admin dashboard shell', async () => {
   const server = createApp({ store: createStore() });
 
-  for (const path of ['/', '/admin']) {
+  for (const [path, expected] of [
+    ['/', /Agent-native market API/],
+    ['/admin', /Command Console/]
+  ]) {
     const req = Readable.from([]);
     req.method = 'GET';
     req.url = path;
@@ -2548,7 +2551,44 @@ test('http server serves the admin dashboard shell', async () => {
     assert.equal(headers['x-content-type-options'], 'nosniff');
     assert.equal(headers['x-frame-options'], 'DENY');
     assert.match(headers['content-security-policy'], /frame-ancestors 'none'/);
-    assert.match(payload, /Command Console/);
+    assert.match(payload, expected);
+  }
+});
+
+test('http server serves machine-readable agent docs', async () => {
+  const server = createApp({ store: createStore() });
+
+  for (const [path, contentType, expected] of [
+    ['/llms.txt', 'text/plain; charset=utf-8', /Recommended agent flow/],
+    ['/openapi.json', 'application/json; charset=utf-8', /Agent Exchange API/]
+  ]) {
+    const req = Readable.from([]);
+    req.method = 'GET';
+    req.url = path;
+    req.headers = {};
+
+    let statusCode = null;
+    let headers = {};
+    let payload = '';
+    const res = new Writable({
+      write(chunk, _encoding, callback) {
+        payload += chunk.toString();
+        callback();
+      }
+    });
+    res.writeHead = (status, writtenHeaders = {}) => {
+      statusCode = status;
+      headers = writtenHeaders;
+    };
+
+    await new Promise((resolve) => {
+      res.on('finish', resolve);
+      server.emit('request', req, res);
+    });
+
+    assert.equal(statusCode, 200);
+    assert.equal(headers['content-type'], contentType);
+    assert.match(payload, expected);
   }
 });
 
