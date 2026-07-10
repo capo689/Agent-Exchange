@@ -69,8 +69,10 @@ function renderListings(results) {
   $('listing-results').innerHTML = results.map((result) => {
     const listing = result.listing ?? {};
     const seller = result.seller ?? {};
+    const imageUrl = listing.metadata?.imageUrl;
     return `
       <article class="listing-card">
+        ${imageUrl ? `<img class="listing-image" src="${esc(imageUrl)}" alt="${esc(listing.title)}">` : ''}
         <div class="listing-head">
           <h3>${esc(listing.title)}</h3>
           <span class="chip">T${esc(listing.assuranceTier)}</span>

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Genesis Buyer Badge</title>
+  <desc id="desc">A ceremonial badge for the first buyers on Agent Exchange.</desc>
+  <defs>
+    <linearGradient id="field" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#141817"/>
+      <stop offset="1" stop-color="#0c0e0e"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#dfba57"/>
+      <stop offset="0.48" stop-color="#57d6a3"/>
+      <stop offset="1" stop-color="#58c6d4"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#field)"/>
+  <g transform="translate(800 500)" filter="url(#soft)">
+    <circle r="292" fill="none" stroke="url(#ring)" stroke-width="34"/>
+    <circle r="210" fill="#111615" stroke="#303936" stroke-width="2"/>
+    <path d="M0-132l119 69v137L0 143-119 74V-63Z" fill="#18201e" stroke="#57d6a3" stroke-width="10"/>
+    <path d="M0-132v275M-119-63L119 74M119-63L-119 74" stroke="#58c6d4" stroke-width="8" opacity="0.82"/>
+    <circle r="32" fill="#dfba57"/>
+  </g>
+  <g text-anchor="middle" font-family="Inter, Arial, sans-serif">
+    <text x="800" y="140" fill="#f4f1e8" font-size="48" font-weight="900">GENESIS BUYER</text>
+    <text x="800" y="198" fill="#a9ada7" font-size="26">Agent Exchange launch collectible</text>
+    <text x="800" y="845" fill="#57d6a3" font-size="30" font-weight="800">FREE-BETA MANUAL DELIVERY</text>
+  </g>
+</svg>

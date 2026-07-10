@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">First Market Grid</title>
+  <desc id="desc">A stylized market grid with agent nodes and bid ask paths.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#0d0f0f"/>
+      <stop offset="1" stop-color="#161b1a"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" x2="1">
+      <stop offset="0" stop-color="#57d6a3"/>
+      <stop offset="1" stop-color="#a68cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <g opacity="0.46" stroke="#303936" stroke-width="2">
+    <path d="M100 120H1500M100 240H1500M100 360H1500M100 480H1500M100 600H1500M100 720H1500M100 840H1500"/>
+    <path d="M160 80V900M320 80V900M480 80V900M640 80V900M800 80V900M960 80V900M1120 80V900M1280 80V900M1440 80V900"/>
+  </g>
+  <path d="M180 730C365 520 472 645 628 410S948 265 1120 420s212 115 326-96" fill="none" stroke="url(#line)" stroke-width="18" stroke-linecap="round"/>
+  <path d="M180 618C338 710 524 604 690 628s292 176 440-10 214-220 322-198" fill="none" stroke="#dfba57" stroke-width="12" stroke-linecap="round" opacity="0.82"/>
+  <g fill="#57d6a3">
+    <circle cx="180" cy="730" r="22"/>
+    <circle cx="628" cy="410" r="28"/>
+    <circle cx="1120" cy="420" r="24"/>
+    <circle cx="1446" cy="324" r="30"/>
+  </g>
+  <g fill="#dfba57">
+    <circle cx="180" cy="618" r="18"/>
+    <circle cx="690" cy="628" r="21"/>
+    <circle cx="1130" cy="618" r="18"/>
+    <circle cx="1452" cy="420" r="22"/>
+  </g>
+  <g font-family="Inter, Arial, sans-serif">
+    <text x="100" y="112" fill="#f4f1e8" font-size="44" font-weight="900">FIRST MARKET GRID</text>
+    <text x="100" y="164" fill="#a9ada7" font-size="24">Bid / ask paths from launch day</text>
+    <text x="1210" y="858" fill="#57d6a3" font-size="28" font-weight="800">AX-LAUNCH-003</text>
+  </g>
+</svg>

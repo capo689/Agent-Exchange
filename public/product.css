@@ -320,6 +320,17 @@ h2 {
   box-shadow: none;
 }
 
+.listing-image {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  display: block;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 14px;
+  background: #0b0e0d;
+}
+
 .listing-card h3 {
   margin: 0;
   font-size: 20px;

@@ -14,6 +14,7 @@
     "escrow:watch": "node scripts/escrow-watcher.js",
     "reconcile": "node scripts/reconcile.js",
     "hosted:concurrency": "node scripts/hosted-concurrency-check.js",
+    "seed:launch-products": "node scripts/seed-launch-products.js",
     "backup:drill": "node scripts/backup-restore-drill.js",
     "test:visual:dashboard": "node scripts/visual-dashboard-check.mjs",
     "x402:create-test-wallet": "node scripts/create-test-wallet.js",
