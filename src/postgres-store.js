@@ -9,6 +9,7 @@ import {
   paymentStatuses,
   sandboxStatusForOutcome
 } from './payments.js';
+import { getConfig } from './config.js';
 
 const { Pool } = pg;
 const bundledSupabaseCaUrl = new URL('../certs/supabase-prod-ca-2021.crt', import.meta.url);
@@ -23,6 +24,14 @@ function digest(value) {
 
 function tokenDigest(token) {
   return createHash('sha256').update(token).digest('hex');
+}
+
+function currentSettlementType() {
+  return getConfig().marketplace.settlementType;
+}
+
+function settlementTypeFromEvents(events) {
+  return events?.[0]?.payload?.settlementType ?? currentSettlementType();
 }
 
 function clone(value) {
@@ -279,6 +288,7 @@ function tradeFromRow(row) {
     assuranceTier: row.assurance_tier,
     buyerAcknowledgedAssurance: row.buyer_acknowledged_assurance,
     state: row.state,
+    settlementType: settlementTypeFromEvents(row.events ?? []),
     priceUsdc: row.price_usdc,
     quantity: row.quantity,
     unit: row.unit,
@@ -483,6 +493,7 @@ export function createPostgresStore({ connectionString }) {
 
   async function createTradeFromAcceptedOffer({ offer, listing, reservation, actorAgentId }, client) {
     const now = nowIso();
+    const settlementType = currentSettlementType();
     const trade = {
       id: `trd_${randomUUID()}`,
       listingId: listing.id,
@@ -502,7 +513,8 @@ export function createPostgresStore({ connectionString }) {
           at: now,
           actor: actorAgentId,
           offerId: offer.id,
-          reservationId: reservation.id
+          reservationId: reservation.id,
+          payload: { settlementType }
         }
       ]
     };
@@ -1231,7 +1243,8 @@ export function createPostgresStore({ connectionString }) {
             type: 'OFFER_MADE',
             at: nowIso(),
             actor: input.buyerAgentId,
-            reservationId: reservationResult.reservation.id
+            reservationId: reservationResult.reservation.id,
+            payload: { settlementType: currentSettlementType() }
           }
         ];
         const { rows } = await client.query(

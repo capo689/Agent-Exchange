@@ -9,6 +9,7 @@ import {
   paymentStatuses,
   sandboxStatusForOutcome
 } from './payments.js';
+import { getConfig } from './config.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -29,6 +30,14 @@ function clone(value) {
 function redactApiKey(apiKey) {
   const { tokenHash, ...safe } = clone(apiKey);
   return safe;
+}
+
+function currentSettlementType() {
+  return getConfig().marketplace.settlementType;
+}
+
+function settlementTypeFromTrade(trade) {
+  return trade.settlementType ?? trade.events?.[0]?.payload?.settlementType ?? currentSettlementType();
 }
 
 function createInitialState() {
@@ -405,6 +414,7 @@ export function createStore({ filePath } = {}) {
 
   function createTradeFromAcceptedOffer({ offer, listing, reservation, actorAgentId }) {
     const now = nowIso();
+    const settlementType = currentSettlementType();
     const trade = {
       id: `trd_${randomUUID()}`,
       listingId: listing.id,
@@ -415,6 +425,7 @@ export function createStore({ filePath } = {}) {
       assuranceTier: listing.assuranceTier,
       buyerAcknowledgedAssurance: Boolean(offer.assuranceAcknowledgement),
       state: 'OFFER_MADE',
+      settlementType,
       priceUsdc: offer.totalPriceUsdc,
       quantity: offer.quantity,
       unit: listing.unit,
@@ -426,7 +437,8 @@ export function createStore({ filePath } = {}) {
           at: now,
           actor: actorAgentId,
           offerId: offer.id,
-          reservationId: reservation.id
+          reservationId: reservation.id,
+          payload: { settlementType }
         }
       ]
     };
@@ -1049,6 +1061,7 @@ export function createStore({ filePath } = {}) {
       const now = nowIso();
       const quantity = Number(input.quantity ?? 1);
       const unitPriceUsdc = input.unitPriceUsdc ?? listing.unitPriceUsdc ?? listing.priceUsdc;
+      const settlementType = currentSettlementType();
       const trade = {
         id: `trd_${randomUUID()}`,
         listingId: listing.id,
@@ -1059,6 +1072,7 @@ export function createStore({ filePath } = {}) {
         assuranceTier: listing.assuranceTier,
         buyerAcknowledgedAssurance: Boolean(input.assuranceAcknowledgement),
         state: 'OFFER_MADE',
+        settlementType,
         priceUsdc: input.priceUsdc ?? multiplyUnitPrice(unitPriceUsdc, quantity),
         quantity,
         unit: listing.unit ?? 'item',
@@ -1069,7 +1083,8 @@ export function createStore({ filePath } = {}) {
             type: 'OFFER_MADE',
             at: now,
             actor: input.buyerAgentId,
-            reservationId: reservationResult.reservation.id
+            reservationId: reservationResult.reservation.id,
+            payload: { settlementType }
           }
         ]
       };
@@ -1345,11 +1360,15 @@ export function createStore({ filePath } = {}) {
     },
 
     getTrade(id) {
-      return trades.get(id) ?? null;
+      const trade = trades.get(id) ?? null;
+      return trade ? { ...trade, settlementType: settlementTypeFromTrade(trade) } : null;
     },
 
     listTrades(filters = {}) {
-      return applyListQuery([...trades.values()], filters);
+      return applyListQuery([...trades.values()].map((trade) => ({
+        ...trade,
+        settlementType: settlementTypeFromTrade(trade)
+      })), filters);
     },
 
     transitionTrade(tradeId, transition) {

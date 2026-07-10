@@ -983,7 +983,9 @@ function queryValue(query, name) {
 }
 
 function x402RequirementsForAmount(amountUsdc) {
-  const x402 = getConfig().payment.x402;
+  const config = getConfig();
+  if (!config.marketplace.paymentsEnabled) return { error: paymentsDisabledResponse() };
+  const x402 = config.payment.x402;
   if (!x402.configured) {
     return {
       error: {
@@ -1015,7 +1017,9 @@ function x402RequirementsForAmount(amountUsdc) {
 }
 
 function manualUsdcInstructionsForAmount(amountUsdc) {
-  const x402 = getConfig().payment.x402;
+  const config = getConfig();
+  if (!config.marketplace.paymentsEnabled) return { error: paymentsDisabledResponse() };
+  const x402 = config.payment.x402;
   if (!x402.payTo || !x402.asset || !x402.network) {
     return {
       error: {
@@ -1047,6 +1051,85 @@ function manualUsdcInstructionsForAmount(amountUsdc) {
       }
     };
   }
+}
+
+function paymentsDisabledResponse() {
+  const marketplace = getConfig().marketplace;
+  return {
+    status: 503,
+    body: {
+      error: 'payments_disabled',
+      mode: marketplace.mode,
+      settlementType: marketplace.settlementType,
+      message: marketplace.launchNotice
+    }
+  };
+}
+
+function paymentEndpointDisabled() {
+  return !getConfig().marketplace.paymentsEnabled ? paymentsDisabledResponse() : null;
+}
+
+function marketplaceSnapshot({ listings, offers, trades }) {
+  const activeListings = listings.filter((listing) => ['active', 'open'].includes(listing.status));
+  const capturedTrades = trades.filter((trade) => trade.state === 'CAPTURED');
+  return {
+    totals: {
+      activeListings: activeListings.length,
+      offers: offers.length,
+      trades: trades.length,
+      capturedTrades: capturedTrades.length
+    },
+    listingsByCategory: countBy(activeListings, 'category'),
+    listingsByAssuranceTier: countBy(activeListings, 'assuranceTier'),
+    offersByStatus: countBy(offers, 'status'),
+    tradesByState: countBy(trades, 'state'),
+    recentListings: recent(activeListings, 5).map((listing) => ({
+      id: listing.id,
+      title: listing.title,
+      category: listing.category,
+      assuranceTier: listing.assuranceTier,
+      priceUsdc: listing.priceUsdc,
+      inventoryType: listing.inventoryType
+    })),
+    recentTrades: recent(trades, 5).map((trade) => ({
+      id: trade.id,
+      state: trade.state,
+      settlementType: trade.settlementType ?? null,
+      priceUsdc: trade.priceUsdc,
+      listingId: trade.listingId
+    }))
+  };
+}
+
+function transitionForMarketplaceMode(transition, rawAction) {
+  const marketplace = getConfig().marketplace;
+  if (marketplace.paymentsEnabled) return transition;
+  if (transition.paymentProvider === 'smart_contract' || rawAction.endsWith('-onchain')) {
+    return {
+      error: {
+        status: 503,
+        body: {
+          error: 'escrow_disabled',
+          mode: marketplace.mode,
+          settlementType: marketplace.settlementType,
+          message: marketplace.launchNotice
+        }
+      }
+    };
+  }
+  if (!transition.escrowType) return transition;
+  return {
+    ...transition,
+    escrowType: null,
+    paymentProvider: null,
+    payload: {
+      ...(transition.payload ?? {}),
+      settlementType: marketplace.settlementType,
+      paymentProcessing: 'disabled',
+      note: marketplace.launchNotice
+    }
+  };
 }
 
 function x402ResourceUrl(pathname) {
@@ -1335,14 +1418,29 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/paid/market-snapshot') {
-    const access = await authorizePaidAccess({
-      store,
-      headers,
-      query,
-      priceUsdc: paidMarketSnapshotPriceUsdc,
-      resource: 'market_snapshot'
-    });
-    if (access.error) return access.error;
+    const marketplace = getConfig().marketplace;
+    let unlockedBy = null;
+    if (!marketplace.paymentsEnabled) {
+      unlockedBy = {
+        provider: 'free_beta',
+        mode: marketplace.mode,
+        settlementType: marketplace.settlementType
+      };
+    } else {
+      const access = await authorizePaidAccess({
+        store,
+        headers,
+        query,
+        priceUsdc: paidMarketSnapshotPriceUsdc,
+        resource: 'market_snapshot'
+      });
+      if (access.error) return access.error;
+      unlockedBy = {
+        paymentIntentId: access.paymentIntent.id,
+        provider: access.paymentIntent.provider,
+        amountUsdc: access.paymentIntent.amountUsdc
+      };
+    }
 
     const dashboardLimit = 10000;
     const [listings, offers, trades] = await Promise.all([
@@ -1350,46 +1448,15 @@ export async function handleApiRequest(
       store.listOffers({ limit: dashboardLimit, offset: 0 }),
       store.listTrades({ limit: dashboardLimit, offset: 0 })
     ]);
-    const activeListings = listings.filter((listing) => ['active', 'open'].includes(listing.status));
-    const capturedTrades = trades.filter((trade) => trade.state === 'CAPTURED');
     return {
       status: 200,
       body: {
         ok: true,
         resource: 'market_snapshot',
-        priceUsdc: paidMarketSnapshotPriceUsdc,
-        unlockedBy: {
-          paymentIntentId: access.paymentIntent.id,
-          provider: access.paymentIntent.provider,
-          amountUsdc: access.paymentIntent.amountUsdc
-        },
+        priceUsdc: marketplace.paymentsEnabled ? paidMarketSnapshotPriceUsdc : '0.00',
+        unlockedBy,
         generatedAt: new Date().toISOString(),
-        snapshot: {
-          totals: {
-            activeListings: activeListings.length,
-            offers: offers.length,
-            trades: trades.length,
-            capturedTrades: capturedTrades.length
-          },
-          listingsByCategory: countBy(activeListings, 'category'),
-          listingsByAssuranceTier: countBy(activeListings, 'assuranceTier'),
-          offersByStatus: countBy(offers, 'status'),
-          tradesByState: countBy(trades, 'state'),
-          recentListings: recent(activeListings, 5).map((listing) => ({
-            id: listing.id,
-            title: listing.title,
-            category: listing.category,
-            assuranceTier: listing.assuranceTier,
-            priceUsdc: listing.priceUsdc,
-            inventoryType: listing.inventoryType
-          })),
-          recentTrades: recent(trades, 5).map((trade) => ({
-            id: trade.id,
-            state: trade.state,
-            priceUsdc: trade.priceUsdc,
-            listingId: trade.listingId
-          }))
-        }
+        snapshot: marketplaceSnapshot({ listings, offers, trades })
       }
     };
   }
@@ -1564,6 +1631,17 @@ export async function handleApiRequest(
   if (method === 'POST' && pathname === '/v1/admin/escrow-watcher/run') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
+    const disabled = !getConfig().marketplace.escrowEnabled
+      ? {
+          status: 503,
+          body: {
+            error: 'escrow_disabled',
+            mode: getConfig().marketplace.mode,
+            message: getConfig().marketplace.launchNotice
+          }
+        }
+      : null;
+    if (disabled) return disabled;
     const fromBlock = parseOptionalBlockNumber(body.fromBlock, 'fromBlock');
     const toBlock = parseOptionalBlockNumber(body.toBlock, 'toBlock');
     const lookbackBlocks = parseOptionalBlockNumber(body.lookbackBlocks, 'lookbackBlocks');
@@ -1616,6 +1694,8 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/payments/x402/requirements') {
+    const disabled = paymentEndpointDisabled();
+    if (disabled) return disabled;
     const amountUsdc = queryValue(query, 'amountUsdc');
     const result = x402RequirementsForAmount(amountUsdc);
     if (result.error) return result.error;
@@ -1648,6 +1728,8 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/payments/manual-usdc/instructions') {
+    const disabled = paymentEndpointDisabled();
+    if (disabled) return disabled;
     const amountUsdc = queryValue(query, 'amountUsdc') ?? '0.01';
     const instructions = manualUsdcInstructionsForAmount(amountUsdc);
     if (instructions.error) return instructions.error;
@@ -1664,6 +1746,8 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/payments/manual-usdc/verify') {
+    const disabled = paymentEndpointDisabled();
+    if (disabled) return disabled;
     const amountUsdc = body.amountUsdc ?? '0.01';
     const instructions = manualUsdcInstructionsForAmount(amountUsdc);
     if (instructions.error) return instructions.error;
@@ -1719,6 +1803,8 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/payments/x402/probe') {
+    const disabled = paymentEndpointDisabled();
+    if (disabled) return disabled;
     const amountUsdc = queryValue(query, 'amountUsdc') ?? '0.01';
     const requirements = x402RequirementsForAmount(amountUsdc);
     if (requirements.error) return requirements.error;
@@ -1800,6 +1886,8 @@ export async function handleApiRequest(
   if (method === 'POST' && pathname === '/v1/payments/x402/settle') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
+    const disabled = paymentEndpointDisabled();
+    if (disabled) return disabled;
 
     const amountUsdc = body.amountUsdc;
     const requirements = x402RequirementsForAmount(amountUsdc);
@@ -1857,6 +1945,8 @@ export async function handleApiRequest(
   }
 
   if (method === 'POST' && pathname === '/v1/payments/sandbox/webhook') {
+    const disabled = paymentEndpointDisabled();
+    if (disabled) return disabled;
     const errors = validateSandboxWebhookInput(body);
     if (errors.length > 0) return { status: 400, body: { error: 'invalid_sandbox_webhook', errors } };
 
@@ -2487,9 +2577,12 @@ export async function handleApiRequest(
       return { status: 403, body: authzError };
     }
 
+    const marketplaceTransition = transitionForMarketplaceMode(transition, rawAction);
+    if (marketplaceTransition.error) return marketplaceTransition.error;
+
     const paymentConfig = getConfig().payment;
-    const usesSmartContractEscrow = transition.paymentProvider === 'smart_contract';
-    if (transition.escrowType && !usesSmartContractEscrow && paymentConfig.provider !== 'sandbox') {
+    const usesSmartContractEscrow = marketplaceTransition.paymentProvider === 'smart_contract';
+    if (marketplaceTransition.escrowType && !usesSmartContractEscrow && paymentConfig.provider !== 'sandbox') {
       return {
         status: 503,
         body: {
@@ -2534,13 +2627,13 @@ export async function handleApiRequest(
       },
       async () => {
         const transitionResult = await store.transitionTrade(tradeId, {
-          ...transition,
-          to: transition.to,
-          eventType: transition.eventType,
+          ...marketplaceTransition,
+          to: marketplaceTransition.to,
+          eventType: marketplaceTransition.eventType,
           actor,
           escrowAmountUsdc: trade.priceUsdc,
           paymentOutcome: body.sandboxPaymentOutcome ?? body.paymentOutcome ?? 'succeeded',
-          paymentProvider: transition.paymentProvider ?? 'sandbox',
+          paymentProvider: marketplaceTransition.paymentProvider ?? 'sandbox',
           paymentStatus: usesSmartContractEscrow ? paymentStatuses.succeeded : undefined,
           providerPaymentId: escrowVerification?.transaction,
           paymentIdempotencyKey: idempotencyKey(headers, body),
@@ -2566,6 +2659,7 @@ export async function handleApiRequest(
                 })
           },
           payload: {
+            ...(marketplaceTransition.payload ?? {}),
             proof: body.proof ?? null,
             reason: body.reason ?? null,
             resolution: body.resolution ?? null,

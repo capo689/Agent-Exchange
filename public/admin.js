@@ -114,7 +114,7 @@ function renderTrades(trades) {
       <span data-resource="agents" data-resource-id="${esc(trade.buyerAgentId)}">${esc(shortId(trade.buyerAgentId))}</span>
       <span data-resource="agents" data-resource-id="${esc(trade.sellerAgentId)}">${esc(shortId(trade.sellerAgentId))}</span>
       <span class="chip">${esc(trade.state)}</span>
-      <span>${esc(trade.priceUsdc)} USDC</span>
+      <span>${esc(trade.priceUsdc)} USDC · ${esc(trade.settlementType ?? '-')}</span>
     </div>
   `).join('') : '<div class="empty">No trades</div>';
 }
@@ -368,6 +368,7 @@ function render(data, reconciliation) {
   $('backend').textContent = text(data.runtime.storageBackend);
   $('database').textContent = data.runtime.databaseConfigured ? text(data.runtime.databaseConnection?.host) : 'not configured';
   $('admin-state').textContent = data.runtime.adminConfigured ? 'configured' : 'missing';
+  $('marketplace-mode').textContent = `${text(data.runtime.marketplace?.mode)} / ${data.runtime.payment?.enabled ? 'payments on' : 'free beta'}`;
   $('updated-at').textContent = time(data.generatedAt);
   $('trade-total').textContent = `${data.totals.trades} total`;
 

@@ -4,6 +4,7 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 
 ## 2026-07-05
 
+- Added free beta launch mode: payments and escrow can be disabled with explicit runtime status, free market snapshot access, external/free trade settlement labeling, and disabled payment endpoints.
 - Verified the hosted Render API against Supabase Postgres with the full reference buyer/seller trade flow.
 - Fixed Postgres JSONB parameter binding for agents, listings, offers, trades, events, moderation, and idempotency writes.
 - Added deploy smoke-test scripts for health, database reachability, and the full hosted reference-bot flow.

@@ -19,6 +19,9 @@ import { signSandboxWebhookPayload, usdcToAtomicAmount } from '../src/payments.j
 import { getTransition } from '../src/trades.js';
 
 process.env.ADMIN_TOKEN ??= 'test-admin-token';
+process.env.MARKETPLACE_MODE ??= 'paid_test';
+process.env.PAYMENTS_ENABLED ??= 'true';
+process.env.ESCROW_ENABLED ??= 'true';
 
 function createClient() {
   const store = createStore();
@@ -240,6 +243,8 @@ test('config accepts Render Supabase env group names without exposing secrets in
     outboundWebhookConfigured: false,
     payment: {
       provider: 'sandbox',
+      enabled: false,
+      escrowEnabled: false,
       sandboxWebhookConfigured: false,
       x402: {
         configured: false,
@@ -261,6 +266,14 @@ test('config accepts Render Supabase env group names without exposing secrets in
         rpcUrlConfigured: false
       }
     },
+    marketplace: {
+      mode: 'free_beta',
+      freeBeta: true,
+      paymentsEnabled: false,
+      escrowEnabled: false,
+      settlementType: 'external_or_free',
+      launchNotice: 'Free beta: Agent Exchange records listings, offers, trades, and reputation, but does not process payments or custody funds.'
+    },
     maxJsonBodyBytes: 1048576,
     rateLimit: {
       enabled: true,
@@ -277,6 +290,7 @@ test('config accepts Render Supabase env group names without exposing secrets in
 test('x402 config exposes safe readiness without leaking facilitator bearer token', () => {
   const status = getSafeRuntimeStatus({
     PAYMENT_PROVIDER: 'x402',
+    PAYMENTS_ENABLED: 'true',
     X402_PAY_TO: '0x122F8Fcaf2152420445Aa424E1D8C0306935B5c9',
     X402_FACILITATOR_URL: 'https://api.cdp.coinbase.com/platform/v2/x402',
     X402_FACILITATOR_BEARER_TOKEN: 'secret-facilitator-token'
@@ -284,6 +298,8 @@ test('x402 config exposes safe readiness without leaking facilitator bearer toke
 
   assert.deepEqual(status.payment, {
     provider: 'x402',
+    enabled: true,
+    escrowEnabled: true,
     sandboxWebhookConfigured: false,
     x402: {
       configured: true,
@@ -658,6 +674,108 @@ test('paid market snapshot requires settled real-rail payment intent', async () 
   const events = await client.adminGet('/v1/admin/events', { type: 'paid_access.granted' });
   assert.equal(events.status, 200);
   assert.equal(events.body.events.length, 1);
+});
+
+test('free beta mode exposes market snapshot without payment intent and disables payment rails', async () => {
+  const previous = {
+    marketplaceMode: process.env.MARKETPLACE_MODE,
+    paymentsEnabled: process.env.PAYMENTS_ENABLED,
+    escrowEnabled: process.env.ESCROW_ENABLED
+  };
+  process.env.MARKETPLACE_MODE = 'free_beta';
+  process.env.PAYMENTS_ENABLED = 'false';
+  process.env.ESCROW_ENABLED = 'false';
+
+  try {
+    const client = createClient();
+    const { seller } = await registerBuyerSeller(client);
+    await client.post('/v1/listings', {
+      sellerAgentId: seller.id,
+      title: 'Free beta listing',
+      description: 'Visible before paid rails are enabled.',
+      category: 'digital_good',
+      assuranceTier: 1,
+      priceUsdc: '0.00'
+    });
+
+    const snapshot = await client.get('/v1/paid/market-snapshot');
+    assert.equal(snapshot.status, 200);
+    assert.equal(snapshot.body.priceUsdc, '0.00');
+    assert.equal(snapshot.body.unlockedBy.provider, 'free_beta');
+    assert.equal(snapshot.body.snapshot.totals.activeListings, 1);
+
+    const x402 = await client.get('/v1/payments/x402/requirements', { amountUsdc: '0.01' });
+    assert.equal(x402.status, 503);
+    assert.equal(x402.body.error, 'payments_disabled');
+
+    const manualUsdc = await client.get('/v1/payments/manual-usdc/instructions', { amountUsdc: '0.01' });
+    assert.equal(manualUsdc.status, 503);
+    assert.equal(manualUsdc.body.error, 'payments_disabled');
+  } finally {
+    process.env.MARKETPLACE_MODE = previous.marketplaceMode;
+    process.env.PAYMENTS_ENABLED = previous.paymentsEnabled;
+    process.env.ESCROW_ENABLED = previous.escrowEnabled;
+  }
+});
+
+test('free beta trades complete without creating payment intents or escrow events', async () => {
+  const previous = {
+    marketplaceMode: process.env.MARKETPLACE_MODE,
+    paymentsEnabled: process.env.PAYMENTS_ENABLED,
+    escrowEnabled: process.env.ESCROW_ENABLED
+  };
+  process.env.MARKETPLACE_MODE = 'free_beta';
+  process.env.PAYMENTS_ENABLED = 'false';
+  process.env.ESCROW_ENABLED = 'false';
+
+  try {
+    const client = createClient();
+    const { seller, buyer } = await registerBuyerSeller(client);
+    const listing = await client.post('/v1/listings', {
+      sellerAgentId: seller.id,
+      title: 'External settlement beta task',
+      description: 'Buyer and seller settle outside Agent Exchange.',
+      category: 'digital_good',
+      assuranceTier: 1,
+      priceUsdc: '1.00'
+    });
+    const created = await client.post('/v1/trades', {
+      listingId: listing.body.listing.id,
+      buyerAgentId: buyer.id,
+      assuranceAcknowledgement: true
+    });
+
+    assert.equal(created.status, 201);
+    assert.equal(created.body.trade.settlementType, 'external_or_free');
+
+    const accepted = await client.post(`/v1/trades/${created.body.trade.id}/accept`, {
+      actorAgentId: seller.id
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.body.trade.state, 'FUNDED');
+    assert.equal(accepted.body.escrowEvent, null);
+    assert.equal(accepted.body.paymentIntent, null);
+
+    await client.post(`/v1/trades/${created.body.trade.id}/deliver`, {
+      actorAgentId: seller.id
+    });
+    const confirmed = await client.post(`/v1/trades/${created.body.trade.id}/confirm`, {
+      actorAgentId: buyer.id
+    });
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.body.trade.state, 'CAPTURED');
+    assert.equal(confirmed.body.escrowEvent, null);
+    assert.equal(confirmed.body.paymentIntent, null);
+
+    const payments = await client.adminGet('/v1/admin/payments');
+    assert.equal(payments.body.paymentIntents.length, 0);
+    const escrow = await client.getWithHeaders('/v1/escrow/events', seller.authHeaders);
+    assert.equal(escrow.body.escrowEvents.length, 0);
+  } finally {
+    process.env.MARKETPLACE_MODE = previous.marketplaceMode;
+    process.env.PAYMENTS_ENABLED = previous.paymentsEnabled;
+    process.env.ESCROW_ENABLED = previous.escrowEnabled;
+  }
 });
 
 test('Tier 0 listings are allowed when they do not violate policy', async () => {
@@ -1209,6 +1327,7 @@ test('escrow watcher records matched smart contract logs idempotently', async ()
     throw new Error(`unexpected rpc method ${request.method}`);
   };
   const config = getConfig({
+    ESCROW_ENABLED: 'true',
     ESCROW_CONTRACT_ADDRESS: contractAddress,
     ESCROW_NETWORK: 'eip155:84532',
     ESCROW_RPC_URL: 'https://rpc.test'

@@ -21,6 +21,9 @@ RATE_LIMIT_READ_MAX_REQUESTS=300
 RATE_LIMIT_WRITE_MAX_REQUESTS=120
 RATE_LIMIT_AUTH_MAX_REQUESTS=30
 ADMIN_TOKEN=generate_a_long_random_admin_token
+MARKETPLACE_MODE=free_beta
+PAYMENTS_ENABLED=false
+ESCROW_ENABLED=false
 PAYMENT_PROVIDER=sandbox
 PAYMENT_SANDBOX_WEBHOOK_SECRET=generate_a_long_random_sandbox_webhook_secret
 X402_PAY_TO=your_base_sepolia_receiving_wallet_for_gateway_tests
@@ -30,6 +33,8 @@ X402_FACILITATOR_URL=https://x402.org/facilitator
 # For CDP facilitator tests only:
 # X402_FACILITATOR_BEARER_TOKEN=generate_or_provide_cdp_facilitator_bearer_token
 ```
+
+`MARKETPLACE_MODE=free_beta`, `PAYMENTS_ENABLED=false`, and `ESCROW_ENABLED=false` are the recommended beta-launch settings. They keep discovery, offers, trades, reputation, moderation, and admin observability live while making every payment/escrow route return an explicit disabled response.
 
 `DATABASE_URL` should be the Supabase shared pooler string for hosted Render runtime. For the current `max` project, the verified host is `aws-1-us-west-2.pooler.supabase.com` and the working port is `6543`.
 

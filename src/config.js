@@ -17,6 +17,13 @@ function parsePositiveInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (String(value).toLowerCase() === 'true') return true;
+  if (String(value).toLowerCase() === 'false') return false;
+  return fallback;
+}
+
 function projectRefFromUrl(url) {
   if (!url) return '';
   try {
@@ -68,6 +75,9 @@ export function getConfig(env = process.env) {
   const supabaseSecretKey = env.SUPABASE_SECRET_KEY ?? env.SUPABASE_SERVICE_ROLE_KEY ?? '';
   const databaseUrl = env.DATABASE_URL ?? '';
   const dataDir = env.DATA_DIR ?? '';
+  const marketplaceMode = env.MARKETPLACE_MODE ?? 'free_beta';
+  const paymentsEnabled = parseBoolean(env.PAYMENTS_ENABLED, marketplaceMode !== 'free_beta');
+  const escrowEnabled = parseBoolean(env.ESCROW_ENABLED, paymentsEnabled);
   const paymentProvider = env.PAYMENT_PROVIDER ?? 'sandbox';
   const x402Network = env.X402_NETWORK ?? X402_BASE_SEPOLIA_NETWORK;
   const x402FacilitatorUrl =
@@ -96,11 +106,21 @@ export function getConfig(env = process.env) {
       url: env.OUTBOUND_WEBHOOK_URL ?? '',
       secret: env.OUTBOUND_WEBHOOK_SECRET ?? ''
     },
+    marketplace: {
+      mode: marketplaceMode,
+      freeBeta: marketplaceMode === 'free_beta',
+      paymentsEnabled,
+      escrowEnabled,
+      settlementType: paymentsEnabled ? 'sandbox_escrow' : 'external_or_free',
+      launchNotice: paymentsEnabled
+        ? 'Payment rails are enabled. Confirm the active provider before allowing real funds.'
+        : 'Free beta: Agent Exchange records listings, offers, trades, and reputation, but does not process payments or custody funds.'
+    },
     payment: {
       provider: paymentProvider,
       sandboxWebhookConfigured: Boolean(env.PAYMENT_SANDBOX_WEBHOOK_SECRET),
       x402: {
-        configured: Boolean(env.X402_PAY_TO && x402FacilitatorUrl),
+        configured: paymentsEnabled && Boolean(env.X402_PAY_TO && x402FacilitatorUrl),
         payTo: env.X402_PAY_TO ?? '',
         network: x402Network,
         asset: env.X402_ASSET ?? x402AssetForNetwork(x402Network),
@@ -111,7 +131,7 @@ export function getConfig(env = process.env) {
         maxTimeoutSeconds: parsePositiveInteger(env.X402_MAX_TIMEOUT_SECONDS, 60)
       },
       escrowContract: {
-        configured: Boolean(env.ESCROW_CONTRACT_ADDRESS),
+        configured: escrowEnabled && Boolean(env.ESCROW_CONTRACT_ADDRESS),
         address: env.ESCROW_CONTRACT_ADDRESS ?? '',
         network: escrowNetwork,
         asset: env.ESCROW_ASSET ?? x402AssetForNetwork(escrowNetwork),
@@ -158,6 +178,8 @@ export function getSafeRuntimeStatus(env = process.env) {
     outboundWebhookConfigured: config.outboundWebhook.configured,
     payment: {
       provider: config.payment.provider,
+      enabled: config.marketplace.paymentsEnabled,
+      escrowEnabled: config.marketplace.escrowEnabled,
       sandboxWebhookConfigured: config.payment.sandboxWebhookConfigured,
       x402: {
         configured: config.payment.x402.configured,
@@ -181,6 +203,7 @@ export function getSafeRuntimeStatus(env = process.env) {
         rpcUrlConfigured: Boolean(config.payment.escrowContract.rpcUrl)
       }
     },
+    marketplace: config.marketplace,
     maxJsonBodyBytes: config.maxJsonBodyBytes,
     rateLimit: config.rateLimit
   };
