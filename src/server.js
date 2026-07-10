@@ -451,6 +451,83 @@ function recent(items, limit = 12) {
     .slice(0, limit);
 }
 
+function isTruthyQuery(value) {
+  return ['1', 'true', 'yes'].includes(String(value ?? '').toLowerCase());
+}
+
+function isSyntheticAgent(agent) {
+  if (!agent) return false;
+  const haystack = searchText(`${agent.developerId ?? ''} ${agent.name ?? ''}`);
+  return [
+    'reference seller bot',
+    'reference buyer bot',
+    'beta seller bot',
+    'beta buyer bot',
+    'probe',
+    'drill',
+    'demo'
+  ].some((marker) => haystack.includes(marker));
+}
+
+function isSyntheticListing(listing, seller = null) {
+  const metadata = listing?.metadata ?? {};
+  if (metadata.demo === true || metadata.drill === true || metadata.synthetic === true || metadata.runId) return true;
+  const haystack = searchText(`${listing?.title ?? ''} ${listing?.description ?? ''}`);
+  return isSyntheticAgent(seller) || [
+    'reference flow',
+    'tier 0 sample api credit inventory',
+    'beta demo',
+    'operational api key auth probe',
+    'operational signed auth probe',
+    'concurrency drill',
+    'safe to ignore'
+  ].some((marker) => haystack.includes(marker));
+}
+
+function syntheticIds({ agents = [], listings = [] }) {
+  const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+  const syntheticAgentIds = new Set(agents.filter(isSyntheticAgent).map((agent) => agent.id));
+  const syntheticListingIds = new Set(
+    listings
+      .filter((listing) => isSyntheticListing(listing, agentsById.get(listing.sellerAgentId)))
+      .map((listing) => listing.id)
+  );
+  return { syntheticAgentIds, syntheticListingIds };
+}
+
+function filterSyntheticMarketplace({ agents = [], listings = [], offers = [], trades = [] }) {
+  const ids = syntheticIds({ agents, listings });
+  const realAgents = agents.filter((agent) => !ids.syntheticAgentIds.has(agent.id));
+  const realListings = listings.filter((listing) => !ids.syntheticListingIds.has(listing.id));
+  const realOffers = offers.filter((offer) => (
+    !ids.syntheticListingIds.has(offer.listingId) &&
+    !ids.syntheticAgentIds.has(offer.buyerAgentId) &&
+    !ids.syntheticAgentIds.has(offer.sellerAgentId)
+  ));
+  const realTrades = trades.filter((trade) => (
+    !ids.syntheticListingIds.has(trade.listingId) &&
+    !ids.syntheticAgentIds.has(trade.buyerAgentId) &&
+    !ids.syntheticAgentIds.has(trade.sellerAgentId)
+  ));
+  return {
+    agents: realAgents,
+    listings: realListings,
+    offers: realOffers,
+    trades: realTrades,
+    syntheticIds: {
+      agentIds: ids.syntheticAgentIds,
+      listingIds: ids.syntheticListingIds,
+      tradeIds: new Set(trades.filter((trade) => !realTrades.includes(trade)).map((trade) => trade.id))
+    },
+    synthetic: {
+      agents: agents.length - realAgents.length,
+      listings: listings.length - realListings.length,
+      offers: offers.length - realOffers.length,
+      trades: trades.length - realTrades.length
+    }
+  };
+}
+
 async function authorizePaidAccess({ store, headers, query, priceUsdc, resource }) {
   const paymentIntentId =
     queryValue(query, 'paymentIntentId') ??
@@ -1335,6 +1412,7 @@ export async function handleApiRequest(
     const term = searchText(queryValue(query, 'q'));
     const category = queryValue(query, 'category');
     const assuranceTier = queryValue(query, 'assuranceTier');
+    const includeSynthetic = isTruthyQuery(queryValue(query, 'includeSynthetic'));
     const limitResult = parseIntegerQuery(queryValue(query, 'limit') ?? undefined, {
       name: 'limit',
       defaultValue: 20,
@@ -1350,6 +1428,7 @@ export async function handleApiRequest(
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     const results = listings
       .filter((listing) => listingAcceptsNewTrades(listing))
+      .filter((listing) => includeSynthetic || !isSyntheticListing(listing, agentsById.get(listing.sellerAgentId)))
       .filter((listing) => !category || listing.category === category)
       .filter((listing) => !assuranceTier || String(listing.assuranceTier) === String(assuranceTier))
       .map((listing) => {
@@ -1380,7 +1459,8 @@ export async function handleApiRequest(
         query: {
           q: term,
           category: category ?? null,
-          assuranceTier: assuranceTier ?? null
+          assuranceTier: assuranceTier ?? null,
+          includeSynthetic
         },
         results
       }
@@ -1388,6 +1468,7 @@ export async function handleApiRequest(
   }
 
   if (method === 'GET' && pathname === '/v1/listings') {
+    const includeSynthetic = isTruthyQuery(queryValue(query, 'includeSynthetic'));
     const listQuery = parseListQuery(query, {
       sellerAgentId: {},
       category: {},
@@ -1396,7 +1477,12 @@ export async function handleApiRequest(
       inventoryType: {}
     });
     if (listQuery.errors) return { status: 400, body: { error: 'invalid_query', errors: listQuery.errors } };
-    const listings = await store.listListings(listQuery.filters);
+    let listings = await store.listListings(listQuery.filters);
+    if (!includeSynthetic) {
+      const agents = await store.listAgents();
+      const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+      listings = listings.filter((listing) => !isSyntheticListing(listing, agentsById.get(listing.sellerAgentId)));
+    }
     return { status: 200, body: paginatedBody('listings', listings, listQuery.filters) };
   }
 
@@ -1524,11 +1610,13 @@ export async function handleApiRequest(
     }
 
     const dashboardLimit = 10000;
-    const [listings, offers, trades] = await Promise.all([
+    const [agents, listings, offers, trades] = await Promise.all([
+      store.listAgents(),
       store.listListings({ limit: dashboardLimit, offset: 0 }),
       store.listOffers({ limit: dashboardLimit, offset: 0 }),
       store.listTrades({ limit: dashboardLimit, offset: 0 })
     ]);
+    const visible = filterSyntheticMarketplace({ agents, listings, offers, trades });
     return {
       status: 200,
       body: {
@@ -1537,7 +1625,12 @@ export async function handleApiRequest(
         priceUsdc: marketplace.paymentsEnabled ? paidMarketSnapshotPriceUsdc : '0.00',
         unlockedBy,
         generatedAt: new Date().toISOString(),
-        snapshot: marketplaceSnapshot({ listings, offers, trades })
+        syntheticExcluded: visible.synthetic,
+        snapshot: marketplaceSnapshot({
+          listings: visible.listings,
+          offers: visible.offers,
+          trades: visible.trades
+        })
       }
     };
   }
@@ -1545,6 +1638,7 @@ export async function handleApiRequest(
   if (method === 'GET' && pathname === '/v1/admin/audit') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
+    const includeSynthetic = isTruthyQuery(queryValue(query, 'includeSynthetic'));
 
     const dashboardLimit = 10000;
     const [
@@ -1572,42 +1666,61 @@ export async function handleApiRequest(
       typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 100, offset: 0 }) : [],
       typeof store.listRequestLogs === 'function' ? store.listRequestLogs({ limit: 100, offset: 0 }) : []
     ]);
+    const visible = includeSynthetic
+      ? {
+          agents,
+          listings,
+          offers,
+          trades,
+          syntheticIds: { agentIds: new Set(), listingIds: new Set(), tradeIds: new Set() },
+          synthetic: { agents: 0, listings: 0, offers: 0, trades: 0 }
+        }
+      : filterSyntheticMarketplace({ agents, listings, offers, trades });
+    const visibleEscrowEvents = escrowEvents.filter((event) => !visible.syntheticIds.tradeIds.has(event.tradeId));
+    const visiblePaymentIntents = paymentIntents.filter((intent) => !visible.syntheticIds.tradeIds.has(intent.tradeId));
+    const visiblePaymentIntentIds = new Set(visiblePaymentIntents.map((intent) => intent.id));
+    const visiblePaymentEvents = paymentEvents.filter((event) => visiblePaymentIntentIds.has(event.paymentIntentId));
+    const visibleReputationEvents = reputationEvents.filter((event) => !visible.syntheticIds.tradeIds.has(event.tradeId));
 
     return {
       status: 200,
       body: {
         generatedAt: new Date().toISOString(),
         runtime: getSafeRuntimeStatus(),
+        view: {
+          includeSynthetic,
+          syntheticExcluded: visible.synthetic
+        },
         totals: {
-          agents: agents.length,
-          listings: listings.length,
-          offers: offers.length,
-          trades: trades.length,
-          escrowEvents: escrowEvents.length,
-          paymentIntents: paymentIntents.length,
-          paymentEvents: paymentEvents.length,
+          agents: visible.agents.length,
+          listings: visible.listings.length,
+          offers: visible.offers.length,
+          trades: visible.trades.length,
+          escrowEvents: visibleEscrowEvents.length,
+          paymentIntents: visiblePaymentIntents.length,
+          paymentEvents: visiblePaymentEvents.length,
           moderationEvents: moderationEvents.length,
-          reputationEvents: reputationEvents.length,
+          reputationEvents: visibleReputationEvents.length,
           auditEvents: auditEvents.length,
           requestLogs: requestLogs.length
         },
         breakdowns: {
-          listingsByStatus: countBy(listings, 'status'),
-          listingsByAssuranceTier: countBy(listings, 'assuranceTier'),
-          offersByStatus: countBy(offers, 'status'),
-          tradesByState: countBy(trades, 'state'),
-          paymentIntentsByStatus: countBy(paymentIntents, 'status'),
-          paymentIntentsByProvider: countBy(paymentIntents, 'provider'),
-          paymentEventsByProvider: countBy(paymentEvents, 'provider'),
+          listingsByStatus: countBy(visible.listings, 'status'),
+          listingsByAssuranceTier: countBy(visible.listings, 'assuranceTier'),
+          offersByStatus: countBy(visible.offers, 'status'),
+          tradesByState: countBy(visible.trades, 'state'),
+          paymentIntentsByStatus: countBy(visiblePaymentIntents, 'status'),
+          paymentIntentsByProvider: countBy(visiblePaymentIntents, 'provider'),
+          paymentEventsByProvider: countBy(visiblePaymentEvents, 'provider'),
           requestLogsByStatus: countBy(requestLogs, 'status'),
           auditEventsBySeverity: countBy(auditEvents, 'severity')
         },
         recent: {
-          trades: recent(trades),
-          reputationEvents: recent(reputationEvents),
-          escrowEvents: recent(escrowEvents),
-          paymentIntents: recent(paymentIntents),
-          paymentEvents: recent(paymentEvents),
+          trades: recent(visible.trades),
+          reputationEvents: recent(visibleReputationEvents),
+          escrowEvents: recent(visibleEscrowEvents),
+          paymentIntents: recent(visiblePaymentIntents),
+          paymentEvents: recent(visiblePaymentEvents),
           moderationEvents: recent(moderationEvents),
           auditEvents: recent(auditEvents),
           requestLogs: recent(requestLogs)

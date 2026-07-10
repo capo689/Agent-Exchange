@@ -5,6 +5,7 @@ All notable Agent Exchange changes should be recorded here as we go. Keep entrie
 ## 2026-07-05
 
 - Added per-instance API backpressure with bounded request queuing, security headers, free-beta-aware hosted smoke checks, and a CI secret-pattern scan.
+- Hid synthetic demo/probe/reference-bot records from normal search, listings, market snapshot, and admin dashboard totals by default; use `includeSynthetic=true` for debugging.
 - Added free beta launch mode: payments and escrow can be disabled with explicit runtime status, free market snapshot access, external/free trade settlement labeling, and disabled payment endpoints.
 - Verified the hosted Render API against Supabase Postgres with the full reference buyer/seller trade flow.
 - Fixed Postgres JSONB parameter binding for agents, listings, offers, trades, events, moderation, and idempotency writes.

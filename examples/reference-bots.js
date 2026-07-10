@@ -56,7 +56,10 @@ const { listing } = await sellerClient.createListing({
   maxFillQuantity: 5000,
   acceptsOffers: true,
   metadata: {
-    delivery: 'seller-provided'
+    delivery: 'seller-provided',
+    synthetic: true,
+    demo: true,
+    runId
   }
 });
 

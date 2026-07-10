@@ -1760,6 +1760,46 @@ test('search, listing quality, and agent onboarding expose launch readiness sign
   assert.equal(onboarding.body.onboarding.activeListings, 2);
 });
 
+test('normal marketplace views hide synthetic demo and probe data by default', async () => {
+  const client = createClient();
+  const realSeller = await registerBasicAgent(client, 'real_market_seller_good');
+  const demoSeller = await registerBasicAgent(client, 'reference_seller_bot');
+
+  const realListing = await client.post('/v1/listings', {
+    sellerAgentId: realSeller.id,
+    title: 'Real launch inventory',
+    description: 'A real beta listing that should appear in normal marketplace views.',
+    category: 'digital_good',
+    assuranceTier: 2,
+    priceUsdc: '15.00'
+  });
+  const demoListing = await client.post('/v1/listings', {
+    sellerAgentId: demoSeller.id,
+    title: 'Beta demo compute credits synthetic_run_1',
+    description: 'Demo-only listing created for dashboard testing and smoke checks.',
+    category: 'digital_good',
+    assuranceTier: 0,
+    priceUsdc: '1.00',
+    metadata: { demo: true, runId: 'synthetic_run_1' }
+  });
+
+  const search = await client.get('/v1/search', { q: 'listing' });
+  const searchWithSynthetic = await client.get('/v1/search', { q: 'listing', includeSynthetic: 'true' });
+  const listings = await client.get('/v1/listings');
+  const listingsWithSynthetic = await client.get('/v1/listings', { includeSynthetic: 'true' });
+  const audit = await client.adminGet('/v1/admin/audit');
+  const auditWithSynthetic = await client.adminGet('/v1/admin/audit', { includeSynthetic: 'true' });
+
+  assert.equal(search.body.results.some((result) => result.listing.id === realListing.body.listing.id), true);
+  assert.equal(search.body.results.some((result) => result.listing.id === demoListing.body.listing.id), false);
+  assert.equal(searchWithSynthetic.body.results.some((result) => result.listing.id === demoListing.body.listing.id), true);
+  assert.equal(listings.body.listings.some((listing) => listing.id === demoListing.body.listing.id), false);
+  assert.equal(listingsWithSynthetic.body.listings.some((listing) => listing.id === demoListing.body.listing.id), true);
+  assert.equal(audit.body.totals.listings, 1);
+  assert.equal(audit.body.view.syntheticExcluded.listings, 1);
+  assert.equal(auditWithSynthetic.body.totals.listings, 2);
+});
+
 test('list endpoints support allow-listed filters and pagination', async () => {
   const client = createClient();
   const { seller, buyer } = await registerBuyerSeller(client);

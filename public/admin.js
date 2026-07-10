@@ -370,7 +370,11 @@ function render(data, reconciliation) {
   $('admin-state').textContent = data.runtime.adminConfigured ? 'configured' : 'missing';
   $('marketplace-mode').textContent = `${text(data.runtime.marketplace?.mode)} / ${data.runtime.payment?.enabled ? 'payments on' : 'free beta'}`;
   $('updated-at').textContent = time(data.generatedAt);
-  $('trade-total').textContent = `${data.totals.trades} total`;
+  const hidden = data.view?.syntheticExcluded ?? {};
+  const hiddenTotal = (hidden.agents ?? 0) + (hidden.listings ?? 0) + (hidden.offers ?? 0) + (hidden.trades ?? 0);
+  $('trade-total').textContent = hiddenTotal > 0
+    ? `${data.totals.trades} real / ${hiddenTotal} test hidden`
+    : `${data.totals.trades} total`;
 
   renderTotals(data);
   renderBars('trade-bars', data.breakdowns.tradesByState);
