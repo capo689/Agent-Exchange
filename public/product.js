@@ -70,6 +70,9 @@ function renderListings(results) {
     const listing = result.listing ?? {};
     const seller = result.seller ?? {};
     const imageUrl = listing.metadata?.imageUrl;
+    const sellerWallet = listing.metadata?.sellerWallet;
+    const buyerInstructions = listing.metadata?.buyerInstructions;
+    const delivery = listing.metadata?.delivery;
     return `
       <article class="listing-card">
         ${imageUrl ? `<img class="listing-image" src="${esc(imageUrl)}" alt="${esc(listing.title)}">` : ''}
@@ -86,6 +89,24 @@ function renderListings(results) {
           <span>${esc(seller.name ?? compactId(listing.sellerAgentId))}</span>
           <span>rep ${esc(seller.reputationScore ?? '-')}</span>
         </div>
+        ${buyerInstructions ? `
+          <div class="buy-box">
+            <span>Manual buy instructions</span>
+            <strong>${esc(buyerInstructions)}</strong>
+          </div>
+        ` : ''}
+        ${sellerWallet ? `
+          <div class="wallet-row">
+            <span>USDC receive wallet</span>
+            <code>${esc(sellerWallet)}</code>
+          </div>
+        ` : ''}
+        ${delivery ? `
+          <div class="wallet-row">
+            <span>Delivery</span>
+            <code>${esc(delivery)}</code>
+          </div>
+        ` : ''}
       </article>
     `;
   }).join('');

@@ -341,6 +341,29 @@ h2 {
   color: var(--muted);
 }
 
+.buy-box,
+.wallet-row {
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, var(--mint) 32%, var(--line));
+  border-radius: 8px;
+  background: rgba(87, 214, 163, 0.07);
+  padding: 12px;
+}
+
+.buy-box span,
+.wallet-row span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.buy-box strong,
+.wallet-row code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
