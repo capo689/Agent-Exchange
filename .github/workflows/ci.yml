@@ -22,8 +22,16 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Secret pattern scan
+        run: |
+          ! grep -RInE "(sk-proj-|sk-[A-Za-z0-9]{20,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|SUPABASE_SECRET_KEY=ey|SERVICE_ROLE_KEY=ey)" . \
+            --exclude-dir=.git \
+            --exclude-dir=node_modules \
+            --exclude=ci.yml \
+            --exclude=package-lock.json
+
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Test
         run: npm test

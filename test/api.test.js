@@ -281,6 +281,12 @@ test('config accepts Render Supabase env group names without exposing secrets in
       readMaxRequests: 300,
       writeMaxRequests: 120,
       authMaxRequests: 30
+    },
+    requestQueue: {
+      enabled: true,
+      maxConcurrent: 50,
+      maxQueued: 200,
+      timeoutMs: 5000
     }
   });
   assert.equal(JSON.stringify(status).includes('secret'), false);
@@ -2406,6 +2412,69 @@ test('http server rate limits repeated auth requests before route handling', asy
   assert.equal(auditEvents.some((event) => event.type === 'http.rate_limited'), true);
 });
 
+test('http server returns overload before flooding queued work', async () => {
+  const store = createStore();
+  let releaseListings = null;
+  store.listListings = async () => new Promise((resolve) => {
+    releaseListings = () => resolve([]);
+  });
+  store.listAgents = async () => [];
+
+  const server = createApp({
+    store,
+    requestQueue: {
+      enabled: true,
+      maxConcurrent: 1,
+      maxQueued: 0,
+      timeoutMs: 1000
+    }
+  });
+
+  async function emitSearchRequest() {
+    const req = Readable.from([]);
+    req.method = 'GET';
+    req.url = '/v1/search';
+    req.headers = { 'x-forwarded-for': '203.0.113.20' };
+
+    let statusCode = null;
+    let headers = {};
+    let payload = '';
+    const res = new Writable({
+      write(chunk, _encoding, callback) {
+        payload += chunk.toString();
+        callback();
+      }
+    });
+    res.writeHead = (status, writtenHeaders = {}) => {
+      statusCode = status;
+      headers = writtenHeaders;
+    };
+
+    const done = new Promise((resolve) => {
+      res.on('finish', () => resolve({ statusCode, headers, body: JSON.parse(payload) }));
+      server.emit('request', req, res);
+    });
+    return done;
+  }
+
+  const first = emitSearchRequest();
+  while (!releaseListings) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  const second = await emitSearchRequest();
+  releaseListings();
+  const completedFirst = await first;
+  const requestLogs = store.listRequestLogs({ limit: 10 });
+  const auditEvents = store.listAuditEvents({ limit: 10 });
+
+  assert.equal(completedFirst.statusCode, 200);
+  assert.equal(second.statusCode, 503);
+  assert.equal(second.body.error, 'request_queue_overloaded');
+  assert.equal(second.headers['retry-after'], '5');
+  assert.equal(requestLogs.some((log) => log.status === 503 && log.errorCode === 'request_queue_overloaded'), true);
+  assert.equal(auditEvents.some((event) => event.type === 'http.request_overloaded'), true);
+});
+
 test('http server serves the admin dashboard shell', async () => {
   const server = createApp({ store: createStore() });
   const req = Readable.from([]);
@@ -2434,6 +2503,9 @@ test('http server serves the admin dashboard shell', async () => {
 
   assert.equal(statusCode, 200);
   assert.equal(headers['content-type'], 'text/html; charset=utf-8');
+  assert.equal(headers['x-content-type-options'], 'nosniff');
+  assert.equal(headers['x-frame-options'], 'DENY');
+  assert.match(headers['content-security-policy'], /frame-ancestors 'none'/);
   assert.match(payload, /Command Console/);
 });
 

@@ -48,9 +48,28 @@ const adminAssets = Object.freeze({
   '/admin/admin.js': { path: '../public/admin.js', type: 'application/javascript; charset=utf-8' }
 });
 
+const baseSecurityHeaders = Object.freeze({
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-frame-options': 'DENY',
+  'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+  'strict-transport-security': 'max-age=31536000; includeSubDomains'
+});
+
+const jsonSecurityHeaders = Object.freeze({
+  ...baseSecurityHeaders,
+  'content-security-policy': "default-src 'none'; frame-ancestors 'none'"
+});
+
+const adminSecurityHeaders = Object.freeze({
+  ...baseSecurityHeaders,
+  'content-security-policy': "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+});
+
 function json(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
+    ...jsonSecurityHeaders,
     'content-type': 'application/json; charset=utf-8',
     'x-request-id': payload.requestId ?? '',
     'content-length': Buffer.byteLength(body),
@@ -65,12 +84,74 @@ async function serveAdminAsset(pathname, res) {
 
   const body = await readFile(new URL(asset.path, import.meta.url));
   res.writeHead(200, {
+    ...adminSecurityHeaders,
     'content-type': asset.type,
     'cache-control': 'no-store',
     'content-length': body.length
   });
   res.end(body);
   return true;
+}
+
+function createRequestQueue({
+  enabled = true,
+  maxConcurrent = 50,
+  maxQueued = 200,
+  timeoutMs = 5_000
+} = {}) {
+  let active = 0;
+  const waiting = [];
+
+  function drain() {
+    while (active < maxConcurrent && waiting.length > 0) {
+      const item = waiting.shift();
+      clearTimeout(item.timer);
+      active += 1;
+      item.resolve(
+        Promise.resolve()
+          .then(item.task)
+          .finally(() => {
+            active -= 1;
+            drain();
+          })
+      );
+    }
+  }
+
+  return {
+    stats() {
+      return { active, queued: waiting.length, maxConcurrent, maxQueued };
+    },
+    run(task) {
+      if (!enabled) return Promise.resolve().then(task);
+      if (active < maxConcurrent) {
+        active += 1;
+        return Promise.resolve()
+          .then(task)
+          .finally(() => {
+            active -= 1;
+            drain();
+          });
+      }
+      if (waiting.length >= maxQueued) {
+        return Promise.resolve({ overloaded: true, reason: 'queue_full' });
+      }
+
+      return new Promise((resolve) => {
+        const item = {
+          task,
+          resolve,
+          timer: null
+        };
+        item.timer = setTimeout(() => {
+          const index = waiting.indexOf(item);
+          if (index >= 0) waiting.splice(index, 1);
+          resolve({ overloaded: true, reason: 'queue_timeout' });
+        }, timeoutMs);
+        waiting.push(item);
+      });
+    }
+  };
 }
 
 async function readJson(req) {
@@ -2703,8 +2784,12 @@ export async function handleApiRequest(
 
 export function createApp({
   store = defaultStore,
-  rateLimiter = createRateLimiter(runtimeConfig.rateLimit)
+  rateLimiter = createRateLimiter(runtimeConfig.rateLimit),
+  requestQueue = createRequestQueue(runtimeConfig.requestQueue)
 } = {}) {
+  const queue = typeof requestQueue?.run === 'function'
+    ? requestQueue
+    : createRequestQueue(requestQueue);
   return http.createServer(async (req, res) => {
     const requestId = createRequestId();
     const startedAt = performance.now();
@@ -2739,6 +2824,7 @@ export function createApp({
         }
 
         res.writeHead(200, {
+          ...adminSecurityHeaders,
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-store',
           connection: 'keep-alive',
@@ -2818,55 +2904,107 @@ export function createApp({
         );
       }
 
-      const body = req.method === 'GET' ? {} : await readJson(req);
-      const result = await handleApiRequest(
-        {
+      const queued = await queue.run(async () => {
+        const body = req.method === 'GET' ? {} : await readJson(req);
+        const result = await handleApiRequest(
+          {
+            method: req.method,
+            pathname: url.pathname,
+            query: Object.fromEntries(url.searchParams.entries()),
+            body,
+            headers: req.headers
+          },
+          store
+        );
+        result.body.requestId = requestId;
+        const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
+        const actor = await resolveRequestActor(req.headers, store);
+        logInfo('http.request', {
+          requestId,
           method: req.method,
-          pathname: url.pathname,
-          query: Object.fromEntries(url.searchParams.entries()),
-          body,
-          headers: req.headers
-        },
-        store
-      );
-      result.body.requestId = requestId;
-      const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
-      const actor = await resolveRequestActor(req.headers, store);
-      logInfo('http.request', {
-        requestId,
-        method: req.method,
-        path: url.pathname,
-        status: result.status,
-        latencyMs
+          path: url.pathname,
+          status: result.status,
+          latencyMs
+        });
+        await safeRecordRequest(store, {
+          requestId,
+          method: req.method,
+          path: url.pathname,
+          route: url.pathname,
+          status: result.status,
+          latencyMs,
+          ...actor,
+          errorCode: result.status >= 400 ? result.body.error ?? null : null,
+          ipHash: hashIp(clientIp(req)),
+          userAgent: req.headers['user-agent'] ?? null
+        });
+        if (result.status >= 400) {
+          await safeRecordAudit(store, {
+            type: result.status >= 500 ? 'http.error_response' : 'http.rejected_request',
+            severity: result.status >= 500 ? 'error' : 'warn',
+            actorAgentId: actor.actorAgentId,
+            sessionId: actor.sessionId,
+            requestId,
+            payload: {
+              method: req.method,
+              path: url.pathname,
+              status: result.status,
+              error: result.body.error ?? null
+            }
+          });
+        }
+        return json(res, result.status, result.body, { ...rateLimit.headers, ...(result.headers ?? {}) });
       });
-      await safeRecordRequest(store, {
-        requestId,
-        method: req.method,
-        path: url.pathname,
-        route: url.pathname,
-        status: result.status,
-        latencyMs,
-        ...actor,
-        errorCode: result.status >= 400 ? result.body.error ?? null : null,
-        ipHash: hashIp(clientIp(req)),
-        userAgent: req.headers['user-agent'] ?? null
-      });
-      if (result.status >= 400) {
+
+      if (queued?.overloaded) {
+        const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
+        const actor = await resolveRequestActor(req.headers, store);
+        const queueStats = queue.stats?.() ?? {};
+        logWarn('http.request_overloaded', {
+          requestId,
+          method: req.method,
+          path: url.pathname,
+          reason: queued.reason,
+          latencyMs,
+          queue: queueStats
+        });
+        await safeRecordRequest(store, {
+          requestId,
+          method: req.method,
+          path: url.pathname,
+          route: url.pathname,
+          status: 503,
+          latencyMs,
+          ...actor,
+          errorCode: 'request_queue_overloaded',
+          ipHash: hashIp(clientIp(req)),
+          userAgent: req.headers['user-agent'] ?? null
+        });
         await safeRecordAudit(store, {
-          type: result.status >= 500 ? 'http.error_response' : 'http.rejected_request',
-          severity: result.status >= 500 ? 'error' : 'warn',
+          type: 'http.request_overloaded',
+          severity: 'warn',
           actorAgentId: actor.actorAgentId,
           sessionId: actor.sessionId,
           requestId,
           payload: {
             method: req.method,
             path: url.pathname,
-            status: result.status,
-            error: result.body.error ?? null
+            reason: queued.reason,
+            queue: queueStats
           }
         });
+        return json(
+          res,
+          503,
+          {
+            error: 'request_queue_overloaded',
+            message: 'The service is busy. Retry after the number of seconds in the Retry-After header.',
+            requestId
+          },
+          { ...rateLimit.headers, 'retry-after': '5' }
+        );
       }
-      return json(res, result.status, result.body, { ...rateLimit.headers, ...(result.headers ?? {}) });
+      return queued;
     } catch (error) {
       const status = error.code === 'REQUEST_BODY_TOO_LARGE'
         ? 413

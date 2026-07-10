@@ -27,6 +27,8 @@ function line(name, passed, detail = '') {
 const checks = [];
 
 const health = await request('/v1/health');
+const isFreeBeta = health.body?.runtime?.marketplace?.mode === 'free_beta';
+const paymentsEnabled = health.body?.runtime?.payment?.enabled === true;
 checks.push(line('health', health.ok && health.body?.ok === true, health.body?.runtime?.storageBackend));
 checks.push(line(
   'database',
@@ -34,9 +36,11 @@ checks.push(line(
   health.body?.runtime?.databaseConnection?.host ?? 'not configured'
 ));
 checks.push(line(
-  'x402 config',
-  Boolean(health.body?.runtime?.payment?.x402?.configured),
-  health.body?.runtime?.payment?.x402?.network ?? 'not configured'
+  isFreeBeta ? 'free beta payment posture' : 'x402 config',
+  isFreeBeta
+    ? paymentsEnabled === false && health.body?.runtime?.payment?.x402?.configured === false
+    : Boolean(health.body?.runtime?.payment?.x402?.configured),
+  isFreeBeta ? health.body?.runtime?.marketplace?.settlementType : health.body?.runtime?.payment?.x402?.network ?? 'not configured'
 ));
 
 const policy = await request('/v1/policy');
@@ -47,13 +51,21 @@ checks.push(line('search', search.ok && Array.isArray(search.body?.results), `${
 
 const manual = await request('/v1/payments/manual-usdc/instructions?amountUsdc=0.01');
 checks.push(line(
-  'manual usdc instructions',
-  Boolean(manual.ok && manual.body?.instructions?.payTo),
+  isFreeBeta ? 'manual usdc disabled' : 'manual usdc instructions',
+  isFreeBeta
+    ? manual.status === 503 && manual.body?.error === 'payments_disabled'
+    : Boolean(manual.ok && manual.body?.instructions?.payTo),
   manual.body?.instructions?.network ?? manual.body?.error
 ));
 
 const paidGate = await request('/v1/paid/market-snapshot');
-checks.push(line('paid gate', paidGate.status === 402, paidGate.body?.error ?? `status ${paidGate.status}`));
+checks.push(line(
+  isFreeBeta ? 'free beta market snapshot' : 'paid gate',
+  isFreeBeta
+    ? paidGate.ok && paidGate.body?.unlockedBy?.provider === 'free_beta'
+    : paidGate.status === 402,
+  paidGate.body?.unlockedBy?.provider ?? paidGate.body?.error ?? `status ${paidGate.status}`
+));
 
 if (adminToken) {
   const audit = await request('/v1/admin/audit', { admin: true });

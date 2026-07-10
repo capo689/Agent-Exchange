@@ -30,8 +30,8 @@ assert(health.runtime?.storageBackend === 'postgres', `expected postgres backend
 assert(health.runtime?.databaseConfigured === true, 'database is not configured');
 assert(health.runtime?.databaseConnection?.parseable === true, 'DATABASE_URL is not parseable');
 
-const agents = await request('/v1/agents');
-assert(Array.isArray(agents.agents), 'GET /v1/agents did not return an agents array');
+const search = await request('/v1/search?limit=5');
+assert(Array.isArray(search.results), 'GET /v1/search did not return a results array');
 
 console.log(JSON.stringify({
   ok: true,
@@ -39,7 +39,10 @@ console.log(JSON.stringify({
   storageBackend: health.runtime.storageBackend,
   databaseHost: health.runtime.databaseConnection.host,
   adminConfigured: health.runtime.adminConfigured,
-  agentCount: agents.agents.length
+  marketplaceMode: health.runtime.marketplace?.mode,
+  paymentsEnabled: health.runtime.payment?.enabled,
+  escrowEnabled: health.runtime.payment?.escrowEnabled,
+  searchResults: search.results.length
 }, null, 2));
 
 if (runReferenceBot) {

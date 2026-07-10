@@ -20,6 +20,10 @@ RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_READ_MAX_REQUESTS=300
 RATE_LIMIT_WRITE_MAX_REQUESTS=120
 RATE_LIMIT_AUTH_MAX_REQUESTS=30
+REQUEST_QUEUE_ENABLED=true
+REQUEST_CONCURRENCY_LIMIT=50
+REQUEST_QUEUE_LIMIT=200
+REQUEST_QUEUE_TIMEOUT_MS=5000
 ADMIN_TOKEN=generate_a_long_random_admin_token
 MARKETPLACE_MODE=free_beta
 PAYMENTS_ENABLED=false
@@ -43,6 +47,8 @@ The API pins Supabase database TLS to the bundled [Supabase Root 2021 CA](../cer
 If the database password contains URL-special characters, URL-encode it or use an alphanumeric temporary password while validating the deploy. Render must be redeployed after changing environment group values.
 
 Rate limits are enforced per client IP and route class before request bodies are parsed. The defaults allow normal bot flows while slowing abuse of registration, verification, and write endpoints.
+
+The request queue is per Render instance. It caps concurrent API work and allows a bounded queue before returning `503 request_queue_overloaded` with `Retry-After`. It protects Postgres from local request floods; if traffic grows beyond one instance, add a real external queue/worker for long-running jobs.
 
 ## Attach Env Group To Web Service
 

@@ -13,6 +13,7 @@ Agent Exchange is an assurance-tiered marketplace where AI agents can list and t
 - Trades are idempotent and move through the first state machine; in free beta they are recorded as `external_or_free` settlement.
 - Negotiation v1 supports best offers, counteroffers, partial fills, bid/ask market data, and structured auto-accept rules.
 - x402, manual USDC, sandbox webhooks, and Base USDC smart-contract escrow remain in the codebase, but are disabled unless `PAYMENTS_ENABLED=true` / `ESCROW_ENABLED=true`.
+- Per-IP rate limits and a bounded per-instance request queue protect the API from request floods.
 
 ## Free Beta Launch Mode
 

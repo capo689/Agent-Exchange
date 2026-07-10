@@ -9,6 +9,9 @@ const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
 const DEFAULT_RATE_LIMIT_READ_MAX_REQUESTS = 300;
 const DEFAULT_RATE_LIMIT_WRITE_MAX_REQUESTS = 120;
 const DEFAULT_RATE_LIMIT_AUTH_MAX_REQUESTS = 30;
+const DEFAULT_REQUEST_CONCURRENCY_LIMIT = 50;
+const DEFAULT_REQUEST_QUEUE_LIMIT = 200;
+const DEFAULT_REQUEST_QUEUE_TIMEOUT_MS = 5_000;
 const DEFAULT_X402_FACILITATOR_URL = 'https://x402.org/facilitator';
 const CDP_X402_FACILITATOR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402';
 
@@ -99,6 +102,12 @@ export function getConfig(env = process.env) {
       readMaxRequests: parsePositiveInteger(env.RATE_LIMIT_READ_MAX_REQUESTS, DEFAULT_RATE_LIMIT_READ_MAX_REQUESTS),
       writeMaxRequests: parsePositiveInteger(env.RATE_LIMIT_WRITE_MAX_REQUESTS, DEFAULT_RATE_LIMIT_WRITE_MAX_REQUESTS),
       authMaxRequests: parsePositiveInteger(env.RATE_LIMIT_AUTH_MAX_REQUESTS, DEFAULT_RATE_LIMIT_AUTH_MAX_REQUESTS)
+    },
+    requestQueue: {
+      enabled: env.REQUEST_QUEUE_ENABLED !== 'false',
+      maxConcurrent: parsePositiveInteger(env.REQUEST_CONCURRENCY_LIMIT, DEFAULT_REQUEST_CONCURRENCY_LIMIT),
+      maxQueued: parsePositiveInteger(env.REQUEST_QUEUE_LIMIT, DEFAULT_REQUEST_QUEUE_LIMIT),
+      timeoutMs: parsePositiveInteger(env.REQUEST_QUEUE_TIMEOUT_MS, DEFAULT_REQUEST_QUEUE_TIMEOUT_MS)
     },
     databaseUrl,
     outboundWebhook: {
@@ -205,6 +214,7 @@ export function getSafeRuntimeStatus(env = process.env) {
     },
     marketplace: config.marketplace,
     maxJsonBodyBytes: config.maxJsonBodyBytes,
-    rateLimit: config.rateLimit
+    rateLimit: config.rateLimit,
+    requestQueue: config.requestQueue
   };
 }

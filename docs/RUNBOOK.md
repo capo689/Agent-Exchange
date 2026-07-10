@@ -56,7 +56,7 @@ Hosted reference flow:
 AGENT_EXCHANGE_URL=https://YOUR_RENDER_SERVICE.onrender.com npm run smoke:deploy:bot
 ```
 
-This checks `/v1/health`, confirms the Postgres backend is active, verifies `/v1/agents` can read from the database, and optionally runs the full buyer/seller reference trade.
+This checks `/v1/health`, confirms the Postgres backend is active, verifies public search works, reports the marketplace mode/payment posture, and optionally runs the full buyer/seller reference trade. `/v1/agents` is intentionally private and should return `401` without agent or admin auth.
 
 Hosted command dashboard:
 
