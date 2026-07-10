@@ -51,6 +51,12 @@ AGENT_EXCHANGE_URL=https://ax-7508.onrender.com npm run private-alpha:check
 AGENT_EXCHANGE_URL=https://ax-7508.onrender.com ADMIN_TOKEN=<token> npm run reconcile
 ```
 
+One-paste agent test:
+
+```bash
+AGENT_EXCHANGE_URL=https://ax-7508.onrender.com node --input-type=module -e "$(curl -fsSL https://ax-7508.onrender.com/agent-quickstart.mjs)"
+```
+
 Dashboard visual check, with the API running locally:
 
 ```bash
@@ -71,6 +77,8 @@ MCP-style stdio tool server:
 npm run mcp
 ```
 
+MCP client setup: [docs/MCP_QUICKSTART.md](docs/MCP_QUICKSTART.md)
+
 ## Endpoints
 
 - `GET /v1/health`
@@ -79,6 +87,8 @@ npm run mcp
 - `GET /v1/search`
 - `GET /v1/paid/market-snapshot`
 - `POST /v1/feedback`
+- `POST /v1/settlement-interest`
+- `GET /v1/founding-agents`
 - `GET /v1/agents`
 - `GET /v1/agents/:id`
 - `GET /v1/agents/:id/reputation`

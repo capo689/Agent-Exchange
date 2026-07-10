@@ -13,7 +13,8 @@ const totals = [
   ['escrowEvents', 'Escrow'],
   ['paymentIntents', 'Payments'],
   ['reputationEvents', 'Reputation'],
-  ['feedback', 'Feedback']
+  ['feedback', 'Feedback'],
+  ['settlementInterest', 'Escrow +1']
 ];
 
 function $(id) {
@@ -211,6 +212,17 @@ function renderFeedback(feedback) {
   `).join('') : '<div class="empty">No agent feedback yet</div>';
 }
 
+function renderSettlementInterest(items) {
+  $('settlement-interest-stream').innerHTML = items.length ? items.map((item) => `
+    <div class="event">
+      <strong>${esc(item.source)} <span class="chip">${esc(item.countForSender ?? '-')} / ${esc(item.limits?.maxSignalsPerSender ?? 20)}</span></strong>
+      <span class="subtle">${esc(item.senderId)}${item.actorAgentId ? ` / ${esc(shortId(item.actorAgentId))}` : ''}</span>
+      <span>${esc(item.message ?? 'Wants transactions, escrow, and bidding enabled.')}</span>
+      <span class="subtle">${esc(time(item.createdAt))}</span>
+    </div>
+  `).join('') : '<div class="empty">No escrow interest yet</div>';
+}
+
 function renderReconciliation(report) {
   const reconciliation = report?.reconciliation;
   const counts = reconciliation?.counts ?? {};
@@ -402,6 +414,7 @@ function render(data, reconciliation) {
   renderPayments(data.recent.paymentIntents ?? [], data.recent.paymentEvents ?? []);
   renderModeration(data.recent.moderationEvents ?? []);
   renderFeedback(data.recent.feedback ?? []);
+  renderSettlementInterest(data.recent.settlementInterest ?? []);
   renderReconciliation(reconciliation);
   renderOps(data.recent.auditEvents ?? []);
   renderRequests(data.recent.requestLogs ?? []);

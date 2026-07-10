@@ -1,8 +1,10 @@
 import readline from 'node:readline';
-import { AgentExchangeClient } from '../sdk/agent-exchange-sdk.js';
+import { AgentExchangeClient, generateAgentKeypair, signChallenge } from '../sdk/agent-exchange-sdk.js';
 
 const client = new AgentExchangeClient({
-  baseUrl: process.env.AGENT_EXCHANGE_URL ?? 'http://localhost:8787'
+  baseUrl: process.env.AGENT_EXCHANGE_URL ?? 'https://ax-7508.onrender.com',
+  sessionToken: process.env.AGENT_EXCHANGE_SESSION_TOKEN ?? null,
+  apiKeyToken: process.env.AGENT_EXCHANGE_API_KEY ?? null
 });
 
 const tools = [
@@ -15,6 +17,31 @@ const tools = [
     name: 'agent_exchange_listings',
     description: 'List active Agent Exchange listings.',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'agent_exchange_search',
+    description: 'Search active Agent Exchange listings.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        q: { type: 'string' },
+        category: { type: 'string' },
+        assuranceTier: { type: 'number' },
+        limit: { type: 'number' }
+      }
+    }
+  },
+  {
+    name: 'agent_exchange_register_agent',
+    description: 'Register and verify a new temporary Agent Exchange agent. Returns a bearer session token for immediate beta testing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        developerId: { type: 'string' },
+        walletAddress: { type: 'string' }
+      }
+    }
   },
   {
     name: 'agent_exchange_create_listing',
@@ -65,6 +92,19 @@ const tools = [
     }
   },
   {
+    name: 'agent_exchange_quick_offer',
+    description: 'Register a temporary buyer agent, search the market, and make an offer on the first matching listing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        q: { type: 'string' },
+        buyerName: { type: 'string' },
+        unitPriceUsdc: { type: 'string' },
+        quantity: { type: 'number' }
+      }
+    }
+  },
+  {
     name: 'agent_exchange_accept_offer',
     description: 'Accept an open offer and create a reservation/trade.',
     inputSchema: {
@@ -87,6 +127,40 @@ const tools = [
         listingId: { type: 'string' }
       }
     }
+  },
+  {
+    name: 'agent_exchange_submit_feedback',
+    description: 'Submit short beta product feedback to help co-create Agent Exchange.',
+    inputSchema: {
+      type: 'object',
+      required: ['senderId', 'text'],
+      properties: {
+        senderId: { type: 'string' },
+        topic: { type: 'string' },
+        text: { type: 'string' },
+        wouldUse: { type: 'boolean' },
+        wantsTransactionsEscrow: { type: 'boolean' },
+        wantsBidding: { type: 'boolean' },
+        contact: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'agent_exchange_signal_settlement_interest',
+    description: 'Send a +1 signal that this agent wants built-in transactions, escrow, and bidding enabled.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        senderId: { type: 'string' },
+        message: { type: 'string' },
+        source: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'agent_exchange_founding_agents',
+    description: 'View public founding-agent leaderboard and beta activity.',
+    inputSchema: { type: 'object', properties: {} }
   }
 ];
 
@@ -97,6 +171,26 @@ function send(message) {
 async function callTool(name, args) {
   if (name === 'agent_exchange_health') return client.health();
   if (name === 'agent_exchange_listings') return client.request('GET', '/v1/listings');
+  if (name === 'agent_exchange_search') return client.search(args ?? {});
+  if (name === 'agent_exchange_register_agent') {
+    const keys = generateAgentKeypair();
+    const registered = await client.registerAgent({
+      developerId: args.developerId ?? `mcp_${Date.now()}`,
+      name: args.name ?? `MCP Agent ${Date.now()}`,
+      walletAddress: args.walletAddress,
+      publicKeyJwk: keys.publicKeyJwk
+    });
+    const challenge = await client.requestChallenge(registered.agent.id);
+    const verified = await client.submitChallenge(registered.agent.id, {
+      challengeId: challenge.challenge.id,
+      signature: signChallenge(keys.privateKey, challenge.challenge.canonical)
+    });
+    return {
+      agent: registered.agent,
+      session: verified.session,
+      note: 'Use the returned session token as AGENT_EXCHANGE_SESSION_TOKEN for authenticated MCP writes.'
+    };
+  }
   if (name === 'agent_exchange_create_listing') return client.createListing(args);
   if (name === 'agent_exchange_create_trade') {
     const { idempotencyKey, ...body } = args;
@@ -106,11 +200,49 @@ async function callTool(name, args) {
     const { idempotencyKey, ...body } = args;
     return client.createOffer(body, idempotencyKey);
   }
+  if (name === 'agent_exchange_quick_offer') {
+    const keys = generateAgentKeypair();
+    const registered = await client.registerAgent({
+      developerId: `mcp_quick_${Date.now()}`,
+      name: args.buyerName ?? `MCP Quick Buyer ${Date.now()}`,
+      publicKeyJwk: keys.publicKeyJwk
+    });
+    const challenge = await client.requestChallenge(registered.agent.id);
+    const verified = await client.submitChallenge(registered.agent.id, {
+      challengeId: challenge.challenge.id,
+      signature: signChallenge(keys.privateKey, challenge.challenge.canonical)
+    });
+    const buyer = client.withSession(verified.session.token);
+    const search = await client.search({ q: args.q, limit: 1 });
+    const listing = search.results?.[0]?.listing;
+    if (!listing) throw new Error('No matching Agent Exchange listings found.');
+    const offer = await buyer.createOffer({
+      listingId: listing.id,
+      buyerAgentId: registered.agent.id,
+      quantity: args.quantity ?? 1,
+      unitPriceUsdc: args.unitPriceUsdc ?? listing.unitPriceUsdc ?? listing.priceUsdc,
+      assuranceAcknowledgement: true,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      metadata: { mcpQuickOffer: true }
+    });
+    return { agent: registered.agent, listing, offer: offer.offer };
+  }
   if (name === 'agent_exchange_accept_offer') {
     const { offerId, idempotencyKey, ...body } = args;
     return client.acceptOffer(offerId, body, idempotencyKey);
   }
   if (name === 'agent_exchange_get_market') return client.getMarket(args.listingId);
+  if (name === 'agent_exchange_submit_feedback') return client.request('POST', '/v1/feedback', args);
+  if (name === 'agent_exchange_signal_settlement_interest') {
+    return client.request('POST', '/v1/settlement-interest', {
+      senderId: args.senderId ?? 'mcp-agent',
+      source: args.source ?? 'mcp',
+      message: args.message ?? 'I want built-in transactions, escrow, and bidding enabled.',
+      wantsTransactionsEscrow: true,
+      wantsBidding: true
+    });
+  }
+  if (name === 'agent_exchange_founding_agents') return client.request('GET', '/v1/founding-agents');
   throw new Error(`Unknown tool: ${name}`);
 }
 

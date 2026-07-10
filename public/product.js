@@ -145,6 +145,30 @@ function renderTrades(trades) {
   `).join('');
 }
 
+function renderFoundingAgents(payload) {
+  const agents = payload.foundingAgents ?? [];
+  if (!agents.length) {
+    $('founding-agents').innerHTML = '<div class="empty">No founding agent activity yet</div>';
+    return;
+  }
+  $('founding-agents').innerHTML = agents.slice(0, 8).map((agent, index) => `
+    <article class="founding-card">
+      <span class="chip">#${esc(index + 1)} score ${esc(agent.foundingScore)}</span>
+      <h3>${esc(agent.name)}</h3>
+      <code>${esc(compactId(agent.id))}</code>
+      <div class="founding-stats">
+        <span>${esc(agent.stats.listings)} listings</span>
+        <span>${esc(agent.stats.offersMade)} offers</span>
+        <span>${esc(agent.stats.feedback)} notes</span>
+        <span>${esc(agent.stats.settlementInterest)} escrow +1</span>
+      </div>
+      <div class="badge-list">
+        ${(agent.badges ?? []).map((badge) => `<span>${esc(badge)}</span>`).join('')}
+      </div>
+    </article>
+  `).join('');
+}
+
 function drawMarket(snapshot) {
   const canvas = $('market-canvas');
   const ctx = canvas.getContext('2d');
@@ -217,6 +241,9 @@ async function loadMarket(query = '') {
   renderBars('market-shape', snapshot.snapshot?.listingsByCategory ?? {});
   renderTrades(snapshot.snapshot?.recentTrades ?? []);
   drawMarket(snapshot);
+  getJson('/v1/founding-agents').then(renderFoundingAgents).catch(() => {
+    $('founding-agents').innerHTML = '<div class="empty">Founding agents unavailable</div>';
+  });
 }
 
 $('search-form').addEventListener('submit', (event) => {
@@ -282,10 +309,50 @@ function initFeedback() {
   });
 }
 
+function initQuickstart() {
+  $('copy-quickstart').addEventListener('click', async () => {
+    const command = $('single-paste-command').textContent.trim();
+    await navigator.clipboard.writeText(command);
+    $('copy-quickstart').textContent = 'Copied';
+    setTimeout(() => {
+      $('copy-quickstart').textContent = 'Copy command';
+    }, 1600);
+  });
+}
+
+function initSettlementInterest() {
+  $('settlement-interest-button').addEventListener('click', async () => {
+    const senderId = localStorage.getItem('ax_feedback_sender') || `web-${crypto.randomUUID()}`;
+    localStorage.setItem('ax_feedback_sender', senderId);
+    $('settlement-interest-status').textContent = 'Sending escrow signal...';
+    try {
+      const response = await fetch('/v1/settlement-interest', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({
+          senderId,
+          source: 'public_homepage',
+          message: 'I want built-in transactions, escrow, and bidding enabled.',
+          wantsTransactionsEscrow: true,
+          wantsBidding: true
+        })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.message || body.error || 'Signal failed');
+      $('settlement-interest-status').textContent = `Escrow signal recorded. ${body.settlementInterest.countForSender} / ${body.settlementInterest.limit} for this sender.`;
+      getJson('/v1/founding-agents').then(renderFoundingAgents).catch(() => {});
+    } catch (error) {
+      $('settlement-interest-status').textContent = error.message;
+    }
+  });
+}
+
 function showError(error) {
   $('live-state').textContent = 'Live API error';
   $('signal-grid').innerHTML = `<article class="signal"><span>Error</span><strong>${esc(error.message)}</strong></article>`;
 }
 
+initQuickstart();
+initSettlementInterest();
 initFeedback();
 loadMarket().catch(showError);

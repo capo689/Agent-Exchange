@@ -713,10 +713,12 @@ test('free beta mode exposes market snapshot without payment intent and disables
     const x402 = await client.get('/v1/payments/x402/requirements', { amountUsdc: '0.01' });
     assert.equal(x402.status, 503);
     assert.equal(x402.body.error, 'payments_disabled');
+    assert.equal(x402.body.settlementInterest.endpoint, '/v1/settlement-interest');
 
     const manualUsdc = await client.get('/v1/payments/manual-usdc/instructions', { amountUsdc: '0.01' });
     assert.equal(manualUsdc.status, 503);
     assert.equal(manualUsdc.body.error, 'payments_disabled');
+    assert.match(manualUsdc.body.settlementInterest.prompt, /escrow/);
   } finally {
     process.env.MARKETPLACE_MODE = previous.marketplaceMode;
     process.env.PAYMENTS_ENABLED = previous.paymentsEnabled;
@@ -1773,6 +1775,67 @@ test('public feedback enforces size and per-sender count limits', async () => {
   assert.equal(capped.body.error, 'feedback_limit_reached');
 });
 
+test('settlement interest records bounded escrow demand signals', async () => {
+  const client = createClient();
+
+  const oversized = await client.postWithoutAuth('/v1/settlement-interest', {
+    senderId: 'escrow-signal-agent',
+    message: 'x'.repeat(501)
+  });
+  assert.equal(oversized.status, 400);
+  assert.equal(oversized.body.error, 'invalid_settlement_interest');
+
+  const accepted = await client.postWithoutAuth('/v1/settlement-interest', {
+    senderId: 'escrow-signal-agent',
+    source: 'payments_disabled',
+    message: 'My agent tried to settle and wants escrow enabled.',
+    wantsTransactionsEscrow: true,
+    wantsBidding: true
+  });
+  assert.equal(accepted.status, 201);
+  assert.equal(accepted.body.settlementInterest.countForSender, 1);
+
+  const events = await client.adminGet('/v1/admin/audit');
+  assert.equal(events.status, 200);
+  assert.equal(events.body.totals.settlementInterest, 1);
+  assert.equal(events.body.recent.settlementInterest[0].senderId, 'escrow-signal-agent');
+});
+
+test('founding agents ranks non-synthetic early activity', async () => {
+  const client = createClient();
+  const seller = await registerBasicAgent(client, 'founding seller');
+  const buyer = await registerBasicAgent(client, 'founding buyer');
+  const listing = await client.post('/v1/listings', {
+    sellerAgentId: seller.id,
+    title: 'Founding launch product',
+    description: 'A real founding listing for early activity scoring.',
+    category: 'digital_good',
+    assuranceTier: 0,
+    priceUsdc: '1.00'
+  });
+  assert.equal(listing.status, 201);
+  const offer = await client.post('/v1/offers', {
+    listingId: listing.body.listing.id,
+    buyerAgentId: buyer.id,
+    quantity: 1,
+    unitPriceUsdc: '1.00',
+    assuranceAcknowledgement: true,
+    expiresAt: futureIso()
+  });
+  assert.equal(offer.status, 201);
+  await client.post('/v1/settlement-interest', {
+    senderId: buyer.id,
+    source: 'test',
+    message: 'Buyer wants escrow.'
+  }, buyer.authHeaders);
+
+  const leaderboard = await client.get('/v1/founding-agents');
+  assert.equal(leaderboard.status, 200);
+  assert.equal(leaderboard.body.totals.listings, 1);
+  assert.ok(leaderboard.body.foundingAgents.some((agent) => agent.id === seller.id && agent.badges.includes('seller')));
+  assert.ok(leaderboard.body.foundingAgents.some((agent) => agent.id === buyer.id && agent.badges.includes('buyer')));
+});
+
 test('search, listing quality, and agent onboarding expose launch readiness signals', async () => {
   const client = createClient();
   const seller = await registerBasicAgent(client, 'seller_good_launch');
@@ -2618,7 +2681,8 @@ test('http server serves machine-readable agent docs', async () => {
 
   for (const [path, contentType, expected] of [
     ['/llms.txt', 'text/plain; charset=utf-8', /Recommended agent flow/],
-    ['/openapi.json', 'application/json; charset=utf-8', /Agent Exchange API/]
+    ['/openapi.json', 'application/json; charset=utf-8', /Agent Exchange API/],
+    ['/agent-quickstart.mjs', 'application/javascript; charset=utf-8', /Quickstart Agent/]
   ]) {
     const req = Readable.from([]);
     req.method = 'GET';

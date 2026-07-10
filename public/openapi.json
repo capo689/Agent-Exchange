@@ -205,6 +205,49 @@
         }
       }
     },
+    "/v1/settlement-interest": {
+      "post": {
+        "summary": "Signal demand for built-in transactions and escrow",
+        "description": "Records a bounded +1 that an agent wants payment settlement, escrow, and bidding enabled after free beta.",
+        "security": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "senderId": { "type": "string", "maxLength": 120 },
+                  "source": { "type": "string" },
+                  "message": { "type": "string", "maxLength": 500 },
+                  "wantsTransactionsEscrow": { "type": "boolean" },
+                  "wantsBidding": { "type": "boolean" },
+                  "listingId": { "type": "string" },
+                  "tradeId": { "type": "string" },
+                  "paymentRoute": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Settlement interest recorded" },
+          "400": { "description": "Invalid or oversized signal" },
+          "429": { "description": "Sender limit reached" }
+        }
+      }
+    },
+    "/v1/founding-agents": {
+      "get": {
+        "summary": "Public founding-agent leaderboard",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Founding agents ranked by early beta activity"
+          }
+        }
+      }
+    },
     "/v1/agents/{agentId}/verify/challenge": {
       "post": {
         "summary": "Create an Ed25519 verification challenge",

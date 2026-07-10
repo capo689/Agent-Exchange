@@ -398,6 +398,75 @@ h2 {
   margin-bottom: 28px;
 }
 
+.paste-section {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(420px, 1.3fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.paste-section p {
+  color: var(--muted);
+  font-size: 17px;
+}
+
+.paste-card {
+  display: grid;
+  gap: 10px;
+}
+
+.paste-card pre {
+  min-height: 112px;
+}
+
+.paste-card button,
+#settlement-interest-button {
+  justify-self: end;
+  border-color: color-mix(in srgb, var(--gold) 45%, var(--line));
+  color: var(--gold);
+}
+
+.founding-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.founding-card {
+  min-height: 170px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111514;
+  padding: 14px;
+}
+
+.founding-card h3 {
+  margin: 0 0 8px;
+}
+
+.founding-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.founding-stats span,
+.badge-list span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 8px;
+  color: var(--muted);
+  background: #0d100f;
+}
+
+.badge-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
 .feedback-section {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(360px, 1.2fr);
@@ -555,6 +624,7 @@ code {
   .hero,
   .split,
   .connect-section,
+  .paste-section,
   .feedback-section,
   .code-grid {
     grid-template-columns: 1fr;

@@ -218,6 +218,18 @@ export class AgentExchangeClient {
     return this.request('GET', `/v1/search${queryString(filters)}`);
   }
 
+  foundingAgents() {
+    return this.request('GET', '/v1/founding-agents');
+  }
+
+  submitFeedback(input) {
+    return this.request('POST', '/v1/feedback', input);
+  }
+
+  signalSettlementInterest(input) {
+    return this.request('POST', '/v1/settlement-interest', input);
+  }
+
   createOffer(input, idempotencyKey) {
     return this.request('POST', '/v1/offers', input, idempotencyKey ? { 'idempotency-key': idempotencyKey } : {});
   }

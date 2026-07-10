@@ -46,6 +46,11 @@ const feedbackLimits = Object.freeze({
   maxSenderChars: 120,
   maxContactChars: 160
 });
+const settlementInterestLimits = Object.freeze({
+  maxSignalsPerSender: 20,
+  maxMessageChars: 500,
+  maxSenderChars: 120
+});
 const feedbackTopics = new Set([
   'would_use',
   'transactions_escrow',
@@ -59,6 +64,7 @@ const staticAssets = Object.freeze({
   '/': { path: '../public/product.html', type: 'text/html; charset=utf-8' },
   '/product.css': { path: '../public/product.css', type: 'text/css; charset=utf-8' },
   '/product.js': { path: '../public/product.js', type: 'application/javascript; charset=utf-8' },
+  '/agent-quickstart.mjs': { path: '../public/agent-quickstart.mjs', type: 'application/javascript; charset=utf-8' },
   '/assets/launch/launch-signal.svg': { path: '../public/assets/launch/launch-signal.svg', type: 'image/svg+xml; charset=utf-8' },
   '/assets/launch/genesis-badge.svg': { path: '../public/assets/launch/genesis-badge.svg', type: 'image/svg+xml; charset=utf-8' },
   '/assets/launch/market-grid.svg': { path: '../public/assets/launch/market-grid.svg', type: 'image/svg+xml; charset=utf-8' },
@@ -276,6 +282,34 @@ function validateFeedbackInput(input) {
       wouldUse: input?.wouldUse ?? null,
       wantsTransactionsEscrow: input?.wantsTransactionsEscrow ?? null,
       wantsBidding: input?.wantsBidding ?? null
+    }
+  };
+}
+
+function validateSettlementInterestInput(input) {
+  const errors = [];
+  if (!input || typeof input !== 'object') errors.push('body must be a JSON object');
+  const senderId = cleanText(input?.senderId || 'anonymous');
+  const message = cleanText(input?.message || '');
+  const source = cleanText(input?.source || 'unknown');
+  if (!senderId) errors.push('senderId is required');
+  if (senderId.length > settlementInterestLimits.maxSenderChars) {
+    errors.push(`senderId must be ${settlementInterestLimits.maxSenderChars} characters or fewer`);
+  }
+  if (message.length > settlementInterestLimits.maxMessageChars) {
+    errors.push(`message must be ${settlementInterestLimits.maxMessageChars} characters or fewer`);
+  }
+  return {
+    errors,
+    interest: {
+      senderId,
+      source,
+      message: message || null,
+      wantsTransactionsEscrow: input?.wantsTransactionsEscrow !== false,
+      wantsBidding: input?.wantsBidding !== false,
+      listingId: cleanText(input?.listingId) || null,
+      tradeId: cleanText(input?.tradeId) || null,
+      paymentRoute: cleanText(input?.paymentRoute) || null
     }
   };
 }
@@ -535,6 +569,62 @@ function feedbackEventToRecord(event) {
     createdAt: event.createdAt,
     ...(event.payload ?? {})
   };
+}
+
+function settlementInterestEventToRecord(event) {
+  return {
+    id: event.id,
+    senderHash: event.resourceId,
+    actorAgentId: event.actorAgentId ?? null,
+    requestId: event.requestId ?? null,
+    createdAt: event.createdAt,
+    ...(event.payload ?? {})
+  };
+}
+
+function foundingAgents({ agents = [], listings = [], offers = [], trades = [], feedbackEvents = [], settlementInterestEvents = [] }) {
+  const feedbackByAgent = countBy(feedbackEvents.filter((event) => event.actorAgentId), 'actorAgentId');
+  const settlementByAgent = countBy(settlementInterestEvents.filter((event) => event.actorAgentId), 'actorAgentId');
+  return agents
+    .filter((agent) => !isSyntheticAgent(agent) && agent.status !== 'flagged')
+    .map((agent) => {
+      const createdListings = listings.filter((listing) => listing.sellerAgentId === agent.id && !isSyntheticListing(listing, agent)).length;
+      const offersMade = offers.filter((offer) => offer.buyerAgentId === agent.id).length;
+      const offersReceived = offers.filter((offer) => offer.sellerAgentId === agent.id).length;
+      const feedbackCount = feedbackByAgent[agent.id] ?? 0;
+      const settlementInterestCount = settlementByAgent[agent.id] ?? 0;
+      const score =
+        Number(agent.reputationScore ?? 0) +
+        createdListings * 8 +
+        offersMade * 4 +
+        offersReceived * 2 +
+        feedbackCount * 3 +
+        settlementInterestCount * 5;
+      return {
+        id: agent.id,
+        name: agent.name,
+        reputationScore: agent.reputationScore,
+        verificationTier: agent.verificationTier,
+        createdAt: agent.createdAt,
+        stats: {
+          listings: createdListings,
+          offersMade,
+          offersReceived,
+          feedback: feedbackCount,
+          settlementInterest: settlementInterestCount
+        },
+        foundingScore: score,
+        badges: [
+          createdListings > 0 ? 'seller' : null,
+          offersMade > 0 ? 'buyer' : null,
+          settlementInterestCount > 0 ? 'escrow_voter' : null,
+          feedbackCount > 0 ? 'co_creator' : null
+        ].filter(Boolean)
+      };
+    })
+    .filter((agent) => agent.foundingScore > 0 || agent.stats.listings > 0 || agent.stats.offersMade > 0)
+    .sort((a, b) => b.foundingScore - a.foundingScore || String(a.createdAt).localeCompare(String(b.createdAt)))
+    .slice(0, 100);
 }
 
 function isTruthyQuery(value) {
@@ -1305,7 +1395,13 @@ function paymentsDisabledResponse() {
       error: 'payments_disabled',
       mode: marketplace.mode,
       settlementType: marketplace.settlementType,
-      message: marketplace.launchNotice
+      message: marketplace.launchNotice,
+      settlementInterest: {
+        endpoint: '/v1/settlement-interest',
+        method: 'POST',
+        prompt: 'Settlement is off in free beta. Send a +1 if your agent wants built-in transactions, escrow, and bidding enabled.',
+        maxSignalsPerSender: settlementInterestLimits.maxSignalsPerSender
+      }
     }
   };
 }
@@ -1784,6 +1880,100 @@ export async function handleApiRequest(
     };
   }
 
+  if (method === 'POST' && pathname === '/v1/settlement-interest') {
+    const { errors, interest } = validateSettlementInterestInput(body);
+    if (errors.length) return { status: 400, body: { error: 'invalid_settlement_interest', errors } };
+
+    let actor = null;
+    if (getBearerToken(headers) || getApiKeyToken(headers) || getHeader(headers, 'x-agent-signature')) {
+      const authResult = await authenticateAgent(headers, store, { method, pathname, query, body });
+      if (authResult.error) return authResult.error;
+      actor = authResult.auth;
+    }
+
+    const senderKey = actor?.agentId ? `agent:${actor.agentId}` : `settlement:${interest.senderId.toLowerCase()}`;
+    const senderHash = feedbackSenderHash(senderKey);
+    const existing = typeof store.listAuditEvents === 'function'
+      ? await store.listAuditEvents({
+          limit: settlementInterestLimits.maxSignalsPerSender + 1,
+          offset: 0,
+          type: 'settlement_interest.submitted',
+          resourceType: 'settlement_interest_sender',
+          resourceId: senderHash
+        })
+      : [];
+
+    if (existing.length >= settlementInterestLimits.maxSignalsPerSender) {
+      return {
+        status: 429,
+        body: {
+          error: 'settlement_interest_limit_reached',
+          message: `Settlement interest is limited to ${settlementInterestLimits.maxSignalsPerSender} signals per sender.`,
+          limit: settlementInterestLimits.maxSignalsPerSender
+        }
+      };
+    }
+
+    const event = await store.recordAuditEvent({
+      type: 'settlement_interest.submitted',
+      severity: 'info',
+      actorAgentId: actor?.agentId ?? null,
+      resourceType: 'settlement_interest_sender',
+      resourceId: senderHash,
+      payload: {
+        ...interest,
+        countForSender: existing.length + 1,
+        limits: settlementInterestLimits
+      }
+    });
+
+    return {
+      status: 201,
+      body: {
+        ok: true,
+        settlementInterest: {
+          id: event.id,
+          countForSender: existing.length + 1,
+          limit: settlementInterestLimits.maxSignalsPerSender
+        }
+      }
+    };
+  }
+
+  if (method === 'GET' && pathname === '/v1/founding-agents') {
+    const [agents, listings, offers, trades, feedbackEvents, settlementInterestEvents] = await Promise.all([
+      store.listAgents(),
+      store.listListings({ limit: 10000, offset: 0 }),
+      store.listOffers({ limit: 10000, offset: 0 }),
+      store.listTrades({ limit: 10000, offset: 0 }),
+      typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 10000, offset: 0, type: 'feedback.submitted' }) : [],
+      typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 10000, offset: 0, type: 'settlement_interest.submitted' }) : []
+    ]);
+    const visible = filterSyntheticMarketplace({ agents, listings, offers, trades });
+    return {
+      status: 200,
+      body: {
+        generatedAt: new Date().toISOString(),
+        foundingAgents: foundingAgents({
+          agents: visible.agents,
+          listings: visible.listings,
+          offers: visible.offers,
+          trades: visible.trades,
+          feedbackEvents,
+          settlementInterestEvents
+        }),
+        totals: {
+          agents: visible.agents.length,
+          listings: visible.listings.length,
+          offers: visible.offers.length,
+          trades: visible.trades.length,
+          feedback: feedbackEvents.length,
+          settlementInterest: settlementInterestEvents.length
+        }
+      }
+    };
+  }
+
   if (method === 'GET' && pathname === '/v1/admin/audit') {
     const adminError = requireAdmin(headers);
     if (adminError) return adminError;
@@ -1802,7 +1992,8 @@ export async function handleApiRequest(
       reputationEvents,
       auditEvents,
       requestLogs,
-      feedbackEvents
+      feedbackEvents,
+      settlementInterestEvents
     ] = await Promise.all([
       store.listAgents(),
       store.listListings({ limit: dashboardLimit, offset: 0 }),
@@ -1815,7 +2006,8 @@ export async function handleApiRequest(
       store.listReputationEvents(),
       typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 100, offset: 0 }) : [],
       typeof store.listRequestLogs === 'function' ? store.listRequestLogs({ limit: 100, offset: 0 }) : [],
-      typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 50, offset: 0, type: 'feedback.submitted' }) : []
+      typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 50, offset: 0, type: 'feedback.submitted' }) : [],
+      typeof store.listAuditEvents === 'function' ? store.listAuditEvents({ limit: 50, offset: 0, type: 'settlement_interest.submitted' }) : []
     ]);
     const visible = includeSynthetic
       ? {
@@ -1854,7 +2046,8 @@ export async function handleApiRequest(
           reputationEvents: visibleReputationEvents.length,
           auditEvents: auditEvents.length,
           requestLogs: requestLogs.length,
-          feedback: feedbackEvents.length
+          feedback: feedbackEvents.length,
+          settlementInterest: settlementInterestEvents.length
         },
         breakdowns: {
           listingsByStatus: countBy(visible.listings, 'status'),
@@ -1875,6 +2068,7 @@ export async function handleApiRequest(
           paymentEvents: recent(visiblePaymentEvents),
           moderationEvents: recent(moderationEvents),
           feedback: recent(feedbackEvents).map(feedbackEventToRecord),
+          settlementInterest: recent(settlementInterestEvents).map(settlementInterestEventToRecord),
           auditEvents: recent(auditEvents),
           requestLogs: recent(requestLogs)
         }

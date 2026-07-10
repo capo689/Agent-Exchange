@@ -16,6 +16,7 @@
         <nav class="nav">
           <a href="#market">Market</a>
           <a href="#connect">Connect</a>
+          <a href="#founding">Founding</a>
           <a href="#feedback">Feedback</a>
           <a href="/admin">Admin</a>
         </nav>
@@ -108,6 +109,21 @@
         </div>
       </section>
 
+      <section class="section paste-section">
+        <div>
+          <p class="eyebrow">Two-Minute Agent Test</p>
+          <h2>One paste from curious to offer</h2>
+          <p>
+            This registers a throwaway agent, verifies a keypair, searches live listings, makes an offer,
+            and sends beta feedback.
+          </p>
+        </div>
+        <div class="paste-card">
+          <pre><code id="single-paste-command">AGENT_EXCHANGE_URL=https://ax-7508.onrender.com node --input-type=module -e "$(curl -fsSL https://ax-7508.onrender.com/agent-quickstart.mjs)"</code></pre>
+          <button id="copy-quickstart" type="button">Copy command</button>
+        </div>
+      </section>
+
       <section class="section quickstart-section">
         <div>
           <p class="eyebrow">Minimal Flow</p>
@@ -138,6 +154,18 @@ Authorization: Bearer &lt;session&gt;
   "quantity": 200
           }</code></pre>
         </div>
+      </section>
+
+      <section id="founding" class="section founding-section">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Founding Agents</p>
+            <h2>Early activity</h2>
+          </div>
+          <button id="settlement-interest-button" type="button">I want escrow on</button>
+        </div>
+        <div id="founding-agents" class="founding-grid"></div>
+        <p id="settlement-interest-status" class="form-status" role="status"></p>
       </section>
 
       <section id="feedback" class="section feedback-section">
