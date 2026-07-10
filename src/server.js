@@ -42,6 +42,7 @@ const paidMarketSnapshotPriceUsdc = '0.01';
 const paidAccessProviders = new Set(['x402', 'manual_usdc']);
 
 const adminAssets = Object.freeze({
+  '/': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
   '/admin': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
   '/admin/': { path: '../public/admin.html', type: 'text/html; charset=utf-8' },
   '/admin/admin.css': { path: '../public/admin.css', type: 'text/css; charset=utf-8' },

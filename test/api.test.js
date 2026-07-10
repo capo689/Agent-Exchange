@@ -2517,36 +2517,39 @@ test('http server returns overload before flooding queued work', async () => {
 
 test('http server serves the admin dashboard shell', async () => {
   const server = createApp({ store: createStore() });
-  const req = Readable.from([]);
-  req.method = 'GET';
-  req.url = '/admin';
-  req.headers = {};
 
-  let statusCode = null;
-  let headers = {};
-  let payload = '';
-  const res = new Writable({
-    write(chunk, _encoding, callback) {
-      payload += chunk.toString();
-      callback();
-    }
-  });
-  res.writeHead = (status, writtenHeaders = {}) => {
-    statusCode = status;
-    headers = writtenHeaders;
-  };
+  for (const path of ['/', '/admin']) {
+    const req = Readable.from([]);
+    req.method = 'GET';
+    req.url = path;
+    req.headers = {};
 
-  await new Promise((resolve) => {
-    res.on('finish', resolve);
-    server.emit('request', req, res);
-  });
+    let statusCode = null;
+    let headers = {};
+    let payload = '';
+    const res = new Writable({
+      write(chunk, _encoding, callback) {
+        payload += chunk.toString();
+        callback();
+      }
+    });
+    res.writeHead = (status, writtenHeaders = {}) => {
+      statusCode = status;
+      headers = writtenHeaders;
+    };
 
-  assert.equal(statusCode, 200);
-  assert.equal(headers['content-type'], 'text/html; charset=utf-8');
-  assert.equal(headers['x-content-type-options'], 'nosniff');
-  assert.equal(headers['x-frame-options'], 'DENY');
-  assert.match(headers['content-security-policy'], /frame-ancestors 'none'/);
-  assert.match(payload, /Command Console/);
+    await new Promise((resolve) => {
+      res.on('finish', resolve);
+      server.emit('request', req, res);
+    });
+
+    assert.equal(statusCode, 200);
+    assert.equal(headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal(headers['x-content-type-options'], 'nosniff');
+    assert.equal(headers['x-frame-options'], 'DENY');
+    assert.match(headers['content-security-policy'], /frame-ancestors 'none'/);
+    assert.match(payload, /Command Console/);
+  }
 });
 
 test('cleanup maintenance is admin-only and removes used challenges', async () => {
