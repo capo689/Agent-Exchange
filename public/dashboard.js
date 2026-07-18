@@ -1,8 +1,8 @@
 const categoryStyles = {
-  generic: { label: 'GEN', color: 'var(--blue)', bg: 'var(--blue-soft)' },
-  digital_good: { label: 'DATA', color: 'var(--violet)', bg: 'var(--violet-soft)' },
-  real_world_experience: { label: 'TASK', color: 'var(--green)', bg: 'var(--green-soft)' },
-  compute: { label: 'GPU', color: 'var(--blue)', bg: 'var(--blue-soft)' }
+  generic: { label: 'GEN', className: 'asset-generic' },
+  digital_good: { label: 'DATA', className: 'asset-digital' },
+  real_world_experience: { label: 'TASK', className: 'asset-task' },
+  compute: { label: 'GPU', className: 'asset-compute' }
 };
 
 function $(id) {
@@ -62,9 +62,9 @@ async function getJson(path) {
   return (await timedJson(path)).payload;
 }
 
-function statCard({ label, value, note, delta, icon, style }) {
+function statCard({ label, value, note, delta, icon, tone }) {
   return `
-    <article class="stat-card" style="${style}">
+    <article class="stat-card ${esc(tone)}">
       <div class="stat-top">
         <div class="stat-label">${esc(label)}</div>
         <div class="stat-icon">${icon}</div>
@@ -87,7 +87,7 @@ function renderStats(snapshot, founding) {
       value: number(totals.activeListings ?? 0),
       delta: number(snapshot.syntheticExcluded?.listings ?? 0),
       note: 'test listings hidden',
-      style: '--glow: rgba(255,91,31,.19); --icon-bg: var(--accent-soft); --icon: var(--accent)',
+      tone: 'tone-accent',
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 7h14v11H5z"/><path d="M8 7V5h8v2M9 12h6"/></svg>'
     }),
     statCard({
@@ -95,7 +95,7 @@ function renderStats(snapshot, founding) {
       value: number(foundingAgents),
       delta: number(founding.foundingAgents?.length ?? 0),
       note: 'ranked founding agents',
-      style: '--glow: rgba(99,167,255,.17); --icon-bg: var(--blue-soft); --icon: var(--blue)',
+      tone: 'tone-blue',
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M17 11h5m-2.5-2.5v5"/></svg>'
     }),
     statCard({
@@ -103,7 +103,7 @@ function renderStats(snapshot, founding) {
       value: number(openOffers),
       delta: number(totals.offers ?? 0),
       note: 'total offer records',
-      style: '--glow: rgba(167,134,255,.17); --icon-bg: var(--violet-soft); --icon: var(--violet)',
+      tone: 'tone-violet',
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M7 7h10v10H7z"/><path d="M4 10V4h6M20 14v6h-6"/></svg>'
     }),
     statCard({
@@ -111,7 +111,7 @@ function renderStats(snapshot, founding) {
       value: money(recordedVolume),
       delta: number(recentTrades.length),
       note: 'recent public trades',
-      style: '--glow: rgba(72,220,145,.16); --icon-bg: var(--green-soft); --icon: var(--green)',
+      tone: 'tone-green',
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 17l6-6 4 4 8-9"/><path d="M15 6h6v6"/></svg>'
     })
   ].join('');
@@ -120,7 +120,7 @@ function renderStats(snapshot, founding) {
 }
 
 function categoryStyle(category) {
-  return categoryStyles[category] ?? { label: String(category ?? 'AX').slice(0, 4).toUpperCase(), color: 'var(--accent)', bg: 'var(--accent-soft)' };
+  return categoryStyles[category] ?? { label: String(category ?? 'AX').slice(0, 4).toUpperCase(), className: 'asset-generic' };
 }
 
 function renderInventory(search) {
@@ -142,7 +142,7 @@ function renderInventory(search) {
       <tr>
         <td>
           <div class="asset">
-            <div class="asset-logo" style="--logo-bg:${style.bg};--logo-color:${style.color}">${esc(style.label)}</div>
+            <div class="asset-logo ${esc(style.className)}">${esc(style.label)}</div>
             <div>
               <strong title="${esc(listing.title)}">${esc(listing.title)}</strong>
               <span>${esc(listing.inventoryType ?? 'unique')} inventory</span>
@@ -150,7 +150,7 @@ function renderInventory(search) {
           </div>
         </td>
         <td>${esc(listing.category)}</td>
-        <td><span class="tier" style="color:${Number(listing.assuranceTier) > 1 ? 'var(--violet)' : 'var(--green)'}">Tier ${esc(listing.assuranceTier)}</span></td>
+        <td><span class="tier ${Number(listing.assuranceTier) > 1 ? 'tier-high' : 'tier-low'}">Tier ${esc(listing.assuranceTier)}</span></td>
         <td><span class="price">${esc(money(listing.priceUsdc))}</span> USDC</td>
         <td><div class="seller"><span class="avatar">${esc(initials(seller.name ?? listing.sellerAgentId))}</span>${esc(seller.name ?? shortId(listing.sellerAgentId))}</div></td>
         <td><span class="status ${statusClass}">${esc(statusClass === 'active' ? 'Active' : listing.status)}</span></td>
@@ -168,10 +168,12 @@ function renderSystem(health, snapshot, latencyMs) {
   $('system-title').textContent = ok ? 'System healthy' : 'System needs attention';
   $('system-subtitle').textContent = ok ? 'Public market services operational' : 'Public market services returned an error';
   $('settlement-status').textContent = market.paymentsEnabled ? 'Payments enabled' : 'Records only';
-  $('settlement-status').style.color = market.paymentsEnabled ? 'var(--green)' : 'var(--yellow)';
+  $('settlement-status').classList.toggle('is-good', Boolean(market.paymentsEnabled));
+  $('settlement-status').classList.toggle('is-warn', !market.paymentsEnabled);
   $('custody-status').textContent = snapshot.unlockedBy?.settlementType === 'external_or_free' ? 'Disabled' : text(snapshot.unlockedBy?.settlementType);
   $('latency-status').textContent = `${number(latencyMs)} ms`;
-  $('latency-status').style.color = latencyMs < 500 ? 'var(--green)' : 'var(--yellow)';
+  $('latency-status').classList.toggle('is-good', latencyMs < 500);
+  $('latency-status').classList.toggle('is-warn', latencyMs >= 500);
   $('sidebar-status-text').textContent = ok ? 'All public endpoints are responding normally.' : 'One or more public endpoints returned an error.';
   $('live-dot').classList.toggle('warn', !ok);
   $('sidebar-status-dot').classList.toggle('warn', !ok);
@@ -185,7 +187,7 @@ function renderTrades(snapshot) {
   }
   $('trade-feed').innerHTML = trades.slice(0, 5).map((trade, index) => `
     <div class="feed-item">
-      <div class="feed-icon" style="${index % 3 === 1 ? 'background:var(--violet-soft);color:var(--violet)' : index % 3 === 2 ? 'background:var(--green-soft);color:var(--green)' : ''}">
+      <div class="feed-icon ${index % 3 === 1 ? 'feed-violet' : index % 3 === 2 ? 'feed-green' : 'feed-blue'}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M7 7h10v10H7z"/><path d="M4 10V4h6M20 14v6h-6"/></svg>
       </div>
       <div class="feed-copy">
@@ -270,7 +272,7 @@ function showFatal(error) {
     value: '!',
     note: error.message,
     delta: '',
-    style: '--glow: rgba(255,91,31,.19); --icon-bg: var(--accent-soft); --icon: var(--accent)',
+    tone: 'tone-accent',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>'
   });
 }

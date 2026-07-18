@@ -414,6 +414,30 @@ h1 {
   filter: blur(16px);
 }
 
+.stat-card.tone-accent {
+  --glow: rgba(255, 91, 31, 0.19);
+  --icon-bg: var(--accent-soft);
+  --icon: var(--accent);
+}
+
+.stat-card.tone-blue {
+  --glow: rgba(99, 167, 255, 0.17);
+  --icon-bg: var(--blue-soft);
+  --icon: var(--blue);
+}
+
+.stat-card.tone-violet {
+  --glow: rgba(167, 134, 255, 0.17);
+  --icon-bg: var(--violet-soft);
+  --icon: var(--violet);
+}
+
+.stat-card.tone-green {
+  --glow: rgba(72, 220, 145, 0.16);
+  --icon-bg: var(--green-soft);
+  --icon: var(--green);
+}
+
 .stat-top {
   display: flex;
   align-items: center;
@@ -589,10 +613,26 @@ tr:hover td {
   border-radius: 9px;
   display: grid;
   place-items: center;
-  color: var(--logo-color);
-  background: var(--logo-bg);
+  color: var(--blue);
+  background: var(--blue-soft);
   font-size: 9px;
   font-weight: 900;
+}
+
+.asset-logo.asset-digital {
+  color: var(--violet);
+  background: var(--violet-soft);
+}
+
+.asset-logo.asset-task {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.asset-logo.asset-compute,
+.asset-logo.asset-generic {
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
 .asset strong {
@@ -630,6 +670,14 @@ tr:hover td {
   height: 5px;
   border-radius: 50%;
   background: currentColor;
+}
+
+.tier-low {
+  color: var(--green);
+}
+
+.tier-high {
+  color: var(--violet);
 }
 
 .price {
@@ -745,6 +793,14 @@ tr:hover td {
   color: var(--soft);
 }
 
+.status-row b.is-good {
+  color: var(--green);
+}
+
+.status-row b.is-warn {
+  color: var(--yellow);
+}
+
 .quick-actions {
   padding: 10px;
   display: grid;
@@ -821,6 +877,21 @@ tr:hover td {
   border-radius: 9px;
   display: grid;
   place-items: center;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.feed-icon.feed-violet {
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+
+.feed-icon.feed-green {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.feed-icon.feed-blue {
   background: var(--blue-soft);
   color: var(--blue);
 }
