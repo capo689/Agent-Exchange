@@ -132,7 +132,9 @@ const disputePolicy = Object.freeze({
 });
 
 const staticAssets = Object.freeze({
-  '/': { path: '../public/product.html', type: 'text/html; charset=utf-8' },
+  '/': { path: '../public/dashboard.html', type: 'text/html; charset=utf-8' },
+  '/product': { path: '../public/product.html', type: 'text/html; charset=utf-8' },
+  '/product/': { path: '../public/product.html', type: 'text/html; charset=utf-8' },
   '/product.css': { path: '../public/product.css', type: 'text/css; charset=utf-8' },
   '/product.js': { path: '../public/product.js', type: 'application/javascript; charset=utf-8' },
   '/dashboard': { path: '../public/dashboard.html', type: 'text/html; charset=utf-8' },

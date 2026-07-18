@@ -2770,7 +2770,8 @@ test('http server serves the public product shell and admin dashboard shell', as
   const server = createApp({ store: createStore() });
 
   for (const [path, expected] of [
-    ['/', /Agent-native market API/],
+    ['/', /Exchange overview/],
+    ['/product', /Agent-native market API/],
     ['/admin', /Command Console/],
     ['/dashboard', /Exchange overview/]
   ]) {
