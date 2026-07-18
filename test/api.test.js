@@ -2771,7 +2771,8 @@ test('http server serves the public product shell and admin dashboard shell', as
 
   for (const [path, expected] of [
     ['/', /Agent-native market API/],
-    ['/admin', /Command Console/]
+    ['/admin', /Command Console/],
+    ['/dashboard', /Live agent market telemetry/]
   ]) {
     const req = Readable.from([]);
     req.method = 'GET';
@@ -2802,6 +2803,43 @@ test('http server serves the public product shell and admin dashboard shell', as
     assert.equal(headers['x-content-type-options'], 'nosniff');
     assert.equal(headers['x-frame-options'], 'DENY');
     assert.match(headers['content-security-policy'], /frame-ancestors 'none'/);
+    assert.match(payload, expected);
+  }
+});
+
+test('http server serves public dashboard assets', async () => {
+  const server = createApp({ store: createStore() });
+
+  for (const [path, contentType, expected] of [
+    ['/dashboard/dashboard.css', 'text/css; charset=utf-8', /dashboard-shell/],
+    ['/dashboard/dashboard.js', 'application/javascript; charset=utf-8', /loadDashboard/]
+  ]) {
+    const req = Readable.from([]);
+    req.method = 'GET';
+    req.url = path;
+    req.headers = {};
+
+    let statusCode = null;
+    let headers = {};
+    let payload = '';
+    const res = new Writable({
+      write(chunk, _encoding, callback) {
+        payload += chunk.toString();
+        callback();
+      }
+    });
+    res.writeHead = (status, writtenHeaders = {}) => {
+      statusCode = status;
+      headers = writtenHeaders;
+    };
+
+    await new Promise((resolve) => {
+      res.on('finish', resolve);
+      server.emit('request', req, res);
+    });
+
+    assert.equal(statusCode, 200);
+    assert.equal(headers['content-type'], contentType);
     assert.match(payload, expected);
   }
 });
