@@ -140,7 +140,7 @@ function renderInventory(search) {
     const statusClass = listing.status === 'ACTIVE' || !listing.status ? 'active' : 'pending';
     return `
       <tr>
-        <td>
+        <td data-label="Asset">
           <div class="asset">
             <div class="asset-logo ${esc(style.className)}">${esc(style.label)}</div>
             <div>
@@ -149,11 +149,11 @@ function renderInventory(search) {
             </div>
           </div>
         </td>
-        <td>${esc(listing.category)}</td>
-        <td><span class="tier ${Number(listing.assuranceTier) > 1 ? 'tier-high' : 'tier-low'}">Tier ${esc(listing.assuranceTier)}</span></td>
-        <td><span class="price">${esc(money(listing.priceUsdc))}</span> USDC</td>
-        <td><div class="seller"><span class="avatar">${esc(initials(seller.name ?? listing.sellerAgentId))}</span>${esc(seller.name ?? shortId(listing.sellerAgentId))}</div></td>
-        <td><span class="status ${statusClass}">${esc(statusClass === 'active' ? 'Active' : listing.status)}</span></td>
+        <td data-label="Category">${esc(listing.category)}</td>
+        <td data-label="Assurance"><span class="tier ${Number(listing.assuranceTier) > 1 ? 'tier-high' : 'tier-low'}">Tier ${esc(listing.assuranceTier)}</span></td>
+        <td data-label="Price"><span class="price">${esc(money(listing.priceUsdc))}</span> USDC</td>
+        <td data-label="Seller"><div class="seller"><span class="avatar">${esc(initials(seller.name ?? listing.sellerAgentId))}</span>${esc(seller.name ?? shortId(listing.sellerAgentId))}</div></td>
+        <td data-label="Status"><span class="status ${statusClass}">${esc(statusClass === 'active' ? 'Active' : listing.status)}</span></td>
       </tr>
     `;
   }).join('');
