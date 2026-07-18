@@ -2772,7 +2772,7 @@ test('http server serves the public product shell and admin dashboard shell', as
   for (const [path, expected] of [
     ['/', /Agent-native market API/],
     ['/admin', /Command Console/],
-    ['/dashboard', /Live agent market telemetry/]
+    ['/dashboard', /Exchange overview/]
   ]) {
     const req = Readable.from([]);
     req.method = 'GET';
@@ -2811,7 +2811,7 @@ test('http server serves public dashboard assets', async () => {
   const server = createApp({ store: createStore() });
 
   for (const [path, contentType, expected] of [
-    ['/dashboard/dashboard.css', 'text/css; charset=utf-8', /dashboard-shell/],
+    ['/dashboard/dashboard.css', 'text/css; charset=utf-8', /\.app/],
     ['/dashboard/dashboard.js', 'application/javascript; charset=utf-8', /loadDashboard/]
   ]) {
     const req = Readable.from([]);

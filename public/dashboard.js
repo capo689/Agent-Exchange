@@ -1,4 +1,9 @@
-const colors = ['#44d7ff', '#53dc91', '#f1bf4d', '#ff745f', '#b38cff', '#7dd3fc'];
+const categoryStyles = {
+  generic: { label: 'GEN', color: 'var(--blue)', bg: 'var(--blue-soft)' },
+  digital_good: { label: 'DATA', color: 'var(--violet)', bg: 'var(--violet-soft)' },
+  real_world_experience: { label: 'TASK', color: 'var(--green)', bg: 'var(--green-soft)' },
+  compute: { label: 'GPU', color: 'var(--blue)', bg: 'var(--blue-soft)' }
+};
 
 function $(id) {
   return document.getElementById(id);
@@ -21,250 +26,255 @@ function number(value) {
   return Number.isFinite(Number(value)) ? new Intl.NumberFormat().format(Number(value)) : text(value);
 }
 
+function money(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return `${text(value)} USDC`;
+  if (parsed >= 1000) return `$${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(parsed / 1000)}K`;
+  return `$${new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(parsed)}`;
+}
+
 function shortId(value) {
   const raw = text(value);
   return raw.length > 15 ? `${raw.slice(0, 8)}...${raw.slice(-4)}` : raw;
 }
 
-function time(value) {
-  if (!value) return '-';
-  return new Intl.DateTimeFormat(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  }).format(new Date(value));
+function initials(value) {
+  const words = text(value).replace(/[_-]/g, ' ').trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return 'AX';
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
+
+function nowTime() {
+  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date());
+}
+
+async function timedJson(path) {
+  const started = performance.now();
+  const response = await fetch(path, { headers: { accept: 'application/json' } });
+  const payload = await response.json();
+  const latencyMs = Math.round(performance.now() - started);
+  if (!response.ok) throw new Error(payload.message ?? payload.error ?? `Request failed: ${path}`);
+  return { payload, latencyMs };
 }
 
 async function getJson(path) {
-  const response = await fetch(path, { headers: { accept: 'application/json' } });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.message ?? payload.error ?? `Request failed: ${path}`);
-  return payload;
+  return (await timedJson(path)).payload;
 }
 
-function renderKpis(snapshot, search, founding) {
-  const totals = snapshot.snapshot?.totals ?? {};
-  const foundingTotals = founding.totals ?? {};
-  const items = [
-    ['Active Listings', totals.activeListings ?? 0],
-    ['Open Offers', totals.offers ?? 0],
-    ['Trades', totals.trades ?? 0],
-    ['Captured', totals.capturedTrades ?? 0],
-    ['Founding Agents', foundingTotals.agents ?? 0],
-    ['Search Hits', search.results?.length ?? 0]
-  ];
-  $('market').innerHTML = items.map(([label, value], index) => `
-    <article class="kpi-card" style="--accent:${colors[index % colors.length]}">
-      <div>
-        <span class="label">${esc(label)}</span>
-        <strong>${esc(number(value))}</strong>
+function statCard({ label, value, note, delta, icon, style }) {
+  return `
+    <article class="stat-card" style="${style}">
+      <div class="stat-top">
+        <div class="stat-label">${esc(label)}</div>
+        <div class="stat-icon">${icon}</div>
       </div>
-      <span class="spark" aria-hidden="true"></span>
+      <div class="stat-value">${esc(value)}</div>
+      <div class="stat-note">${delta ? `<span class="delta">${esc(delta)}</span>` : ''}${esc(note)}</div>
     </article>
-  `).join('');
+  `;
 }
 
-function renderBars(snapshot) {
+function renderStats(snapshot, founding) {
   const totals = snapshot.snapshot?.totals ?? {};
-  const shape = {
-    'active listings': totals.activeListings ?? 0,
-    offers: totals.offers ?? 0,
-    trades: totals.trades ?? 0,
-    captured: totals.capturedTrades ?? 0,
-    disputed: totals.disputedTrades ?? 0
-  };
-  const entries = Object.entries(shape).filter(([, value]) => Number(value) > 0);
-  if (!entries.length) {
-    $('shape-bars').innerHTML = '<div class="empty">No live market activity yet.</div>';
-    return;
-  }
-  const max = Math.max(1, ...entries.map(([, value]) => Number(value)));
-  $('shape-bars').innerHTML = entries.map(([label, value], index) => `
-    <div class="bar-row">
-      <span>${esc(label)}</span>
-      <span class="bar-track"><span class="bar-fill" style="--w:${Math.max(5, (Number(value) / max) * 100)}%;--accent:${colors[index % colors.length]}"></span></span>
-      <strong>${esc(number(value))}</strong>
-    </div>
-  `).join('');
+  const openOffers = snapshot.snapshot?.offersByStatus?.OPEN ?? totals.offers ?? 0;
+  const recentTrades = snapshot.snapshot?.recentTrades ?? [];
+  const recordedVolume = recentTrades.reduce((sum, trade) => sum + (Number(trade.priceUsdc) || 0), 0);
+  const foundingAgents = founding.totals?.agents ?? founding.foundingAgents?.length ?? 0;
+  $('stats').innerHTML = [
+    statCard({
+      label: 'Live listings',
+      value: number(totals.activeListings ?? 0),
+      delta: number(snapshot.syntheticExcluded?.listings ?? 0),
+      note: 'test listings hidden',
+      style: '--glow: rgba(255,91,31,.19); --icon-bg: var(--accent-soft); --icon: var(--accent)',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 7h14v11H5z"/><path d="M8 7V5h8v2M9 12h6"/></svg>'
+    }),
+    statCard({
+      label: 'Registered agents',
+      value: number(foundingAgents),
+      delta: number(founding.foundingAgents?.length ?? 0),
+      note: 'ranked founding agents',
+      style: '--glow: rgba(99,167,255,.17); --icon-bg: var(--blue-soft); --icon: var(--blue)',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M17 11h5m-2.5-2.5v5"/></svg>'
+    }),
+    statCard({
+      label: 'Open offers',
+      value: number(openOffers),
+      delta: number(totals.offers ?? 0),
+      note: 'total offer records',
+      style: '--glow: rgba(167,134,255,.17); --icon-bg: var(--violet-soft); --icon: var(--violet)',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M7 7h10v10H7z"/><path d="M4 10V4h6M20 14v6h-6"/></svg>'
+    }),
+    statCard({
+      label: 'Recorded volume',
+      value: money(recordedVolume),
+      delta: number(recentTrades.length),
+      note: 'recent public trades',
+      style: '--glow: rgba(72,220,145,.16); --icon-bg: var(--green-soft); --icon: var(--green)',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 17l6-6 4 4 8-9"/><path d="M15 6h6v6"/></svg>'
+    })
+  ].join('');
+  $('nav-market-count').textContent = number(totals.offers ?? 0);
+  $('nav-inventory-count').textContent = number(totals.activeListings ?? 0);
 }
 
-function renderSettlement(health, snapshot) {
-  const runtime = health.runtime ?? {};
-  const market = runtime.marketplace ?? {};
-  const unlockedBy = snapshot.unlockedBy ?? {};
-  $('mode-label').textContent = market.freeBeta ? 'Free beta' : text(market.mode);
-  $('settlement-pill').textContent = market.paymentsEnabled ? 'Payments enabled' : 'Free beta';
-  $('settlement-panel').innerHTML = [
-    ['Mode', market.mode ?? '-'],
-    ['Settlement', market.settlementType ?? '-'],
-    ['Snapshot Price', snapshot.priceUsdc ? `${snapshot.priceUsdc} USDC` : '-'],
-    ['Unlocked By', unlockedBy.provider ?? '-']
-  ].map(([label, value]) => `
-    <div>
-      <span>${esc(label)}</span>
-      <strong>${esc(value)}</strong>
-    </div>
-  `).join('');
+function categoryStyle(category) {
+  return categoryStyles[category] ?? { label: String(category ?? 'AX').slice(0, 4).toUpperCase(), color: 'var(--accent)', bg: 'var(--accent-soft)' };
 }
 
-function renderListings(results) {
+function renderInventory(search) {
+  const results = search.results ?? [];
   if (!results.length) {
-    $('listing-grid').innerHTML = '<div class="empty">No active public listings match this search.</div>';
+    $('inventory-table').innerHTML = `
+      <tr class="empty-row">
+        <td colspan="6">No active public listings match this search.</td>
+      </tr>
+    `;
     return;
   }
-  $('listing-grid').innerHTML = results.slice(0, 9).map((result) => {
+  $('inventory-table').innerHTML = results.slice(0, 8).map((result) => {
     const listing = result.listing ?? {};
     const seller = result.seller ?? {};
+    const style = categoryStyle(listing.category);
+    const statusClass = listing.status === 'ACTIVE' || !listing.status ? 'active' : 'pending';
     return `
-      <article class="listing-card">
-        <div class="listing-head">
-          <h3>${esc(listing.title)}</h3>
-          <span class="chip">T${esc(listing.assuranceTier)}</span>
-        </div>
-        <p>${esc(listing.description)}</p>
-        <div class="listing-meta">
-          <span>${esc(listing.category)} / ${esc(listing.inventoryType)}</span>
-          <strong>${esc(listing.priceUsdc)} USDC</strong>
-        </div>
-        <div class="listing-meta">
-          <span>${esc(seller.name ?? shortId(listing.sellerAgentId))}</span>
-          <span>rep ${esc(seller.reputationScore ?? '-')}</span>
-        </div>
-      </article>
+      <tr>
+        <td>
+          <div class="asset">
+            <div class="asset-logo" style="--logo-bg:${style.bg};--logo-color:${style.color}">${esc(style.label)}</div>
+            <div>
+              <strong title="${esc(listing.title)}">${esc(listing.title)}</strong>
+              <span>${esc(listing.inventoryType ?? 'unique')} inventory</span>
+            </div>
+          </div>
+        </td>
+        <td>${esc(listing.category)}</td>
+        <td><span class="tier" style="color:${Number(listing.assuranceTier) > 1 ? 'var(--violet)' : 'var(--green)'}">Tier ${esc(listing.assuranceTier)}</span></td>
+        <td><span class="price">${esc(money(listing.priceUsdc))}</span> USDC</td>
+        <td><div class="seller"><span class="avatar">${esc(initials(seller.name ?? listing.sellerAgentId))}</span>${esc(seller.name ?? shortId(listing.sellerAgentId))}</div></td>
+        <td><span class="status ${statusClass}">${esc(statusClass === 'active' ? 'Active' : listing.status)}</span></td>
+      </tr>
     `;
   }).join('');
 }
 
-function renderAgents(founding) {
-  const agents = founding.foundingAgents ?? [];
-  if (!agents.length) {
-    $('agent-list').innerHTML = '<div class="empty">No founding agent activity yet.</div>';
-    return;
-  }
-  $('agent-list').innerHTML = agents.slice(0, 7).map((agent, index) => `
-    <article class="agent-card">
-      <span class="chip">#${esc(index + 1)} score ${esc(number(agent.foundingScore))}</span>
-      <h3>${esc(agent.name)}</h3>
-      <code>${esc(shortId(agent.id))}</code>
-      <div class="agent-stats">
-        <span>${esc(number(agent.stats?.listings ?? 0))} listings</span>
-        <span>${esc(number(agent.stats?.offersMade ?? 0))} offers</span>
-        <span>${esc(number(agent.stats?.feedback ?? 0))} notes</span>
-      </div>
-    </article>
-  `).join('');
+function renderSystem(health, snapshot, latencyMs) {
+  const market = health.runtime?.marketplace ?? {};
+  const ok = Boolean(health.ok);
+  $('live-label').textContent = ok ? 'Live API' : 'API issue';
+  $('mode-label').textContent = market.freeBeta ? 'Free beta' : text(market.mode);
+  $('timestamp').textContent = `Updated ${nowTime()}`;
+  $('system-title').textContent = ok ? 'System healthy' : 'System needs attention';
+  $('system-subtitle').textContent = ok ? 'Public market services operational' : 'Public market services returned an error';
+  $('settlement-status').textContent = market.paymentsEnabled ? 'Payments enabled' : 'Records only';
+  $('settlement-status').style.color = market.paymentsEnabled ? 'var(--green)' : 'var(--yellow)';
+  $('custody-status').textContent = snapshot.unlockedBy?.settlementType === 'external_or_free' ? 'Disabled' : text(snapshot.unlockedBy?.settlementType);
+  $('latency-status').textContent = `${number(latencyMs)} ms`;
+  $('latency-status').style.color = latencyMs < 500 ? 'var(--green)' : 'var(--yellow)';
+  $('sidebar-status-text').textContent = ok ? 'All public endpoints are responding normally.' : 'One or more public endpoints returned an error.';
+  $('live-dot').classList.toggle('warn', !ok);
+  $('sidebar-status-dot').classList.toggle('warn', !ok);
 }
 
 function renderTrades(snapshot) {
   const trades = snapshot.snapshot?.recentTrades ?? [];
   if (!trades.length) {
-    $('trade-list').innerHTML = '<div class="empty">No public trade records yet.</div>';
+    $('trade-feed').innerHTML = '<div class="empty">No public trade records yet.</div>';
     return;
   }
-  $('trade-list').innerHTML = trades.slice(0, 8).map((trade) => `
-    <article class="event-row">
-      <strong>${esc(shortId(trade.id))}</strong>
-      <span>${esc(trade.state)} / ${esc(trade.settlementType ?? 'free_beta')}</span>
-      <code>${esc(trade.priceUsdc)} USDC</code>
-    </article>
+  $('trade-feed').innerHTML = trades.slice(0, 5).map((trade, index) => `
+    <div class="feed-item">
+      <div class="feed-icon" style="${index % 3 === 1 ? 'background:var(--violet-soft);color:var(--violet)' : index % 3 === 2 ? 'background:var(--green-soft);color:var(--green)' : ''}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M7 7h10v10H7z"/><path d="M4 10V4h6M20 14v6h-6"/></svg>
+      </div>
+      <div class="feed-copy">
+        <strong>${esc(shortId(trade.id))} moved to ${esc(trade.state)}</strong>
+        <span>${esc(shortId(trade.listingId))} · ${esc(trade.settlementType ?? 'free_beta')}</span>
+      </div>
+      <div class="feed-value">
+        <b>${esc(money(trade.priceUsdc))} USDC</b>
+        <span>live record</span>
+      </div>
+    </div>
   `).join('');
 }
 
-function drawMarket(snapshot) {
-  const canvas = $('market-canvas');
-  const ctx = canvas.getContext('2d');
-  const width = canvas.width;
-  const height = canvas.height;
-  const totals = snapshot.snapshot?.totals ?? {};
-  const values = [
-    ['Listings', totals.activeListings ?? 0],
-    ['Offers', totals.offers ?? 0],
-    ['Trades', totals.trades ?? 0],
-    ['Captured', totals.capturedTrades ?? 0],
-    ['Disputed', totals.disputedTrades ?? 0]
-  ];
-  const max = Math.max(1, ...values.map(([, value]) => Number(value) || 0));
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#0b1116';
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  ctx.lineWidth = 1;
-  for (let x = 0; x <= width; x += 46) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-    ctx.stroke();
+function renderAgents(founding) {
+  const agents = founding.foundingAgents ?? [];
+  if (!agents.length) {
+    $('leaderboard').innerHTML = '<div class="empty">No founding agent activity yet.</div>';
+    return;
   }
-  for (let y = 0; y <= height; y += 46) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
-    ctx.stroke();
-  }
+  $('leaderboard').innerHTML = agents.slice(0, 6).map((agent, index) => `
+    <div class="agent-row">
+      <div class="rank">${String(index + 1).padStart(2, '0')}</div>
+      <div class="agent-main">
+        <span class="avatar">${esc(initials(agent.name))}</span>
+        <div class="agent-name">
+          <strong title="${esc(agent.name)}">${esc(agent.name)}</strong>
+          <span>${esc(agent.verificationTier ?? 'tier 0')} · rep ${esc(agent.reputationScore ?? 0)}</span>
+        </div>
+      </div>
+      <div class="agent-score">
+        <b>${esc(number(agent.foundingScore))} pts</b>
+        <span>${esc(number(agent.stats?.listings ?? 0))} listings</span>
+      </div>
+    </div>
+  `).join('');
+}
 
-  const plot = values.map(([label, value], index) => ({
-    label,
-    value: Number(value) || 0,
-    x: 110 + index * 178,
-    y: height - 86 - ((Number(value) || 0) / max) * 300
-  }));
-
-  ctx.strokeStyle = 'rgba(68,215,255,0.62)';
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  plot.forEach((point, index) => {
-    if (index === 0) ctx.moveTo(point.x, point.y);
-    else ctx.lineTo(point.x, point.y);
-  });
-  ctx.stroke();
-
-  plot.forEach((point, index) => {
-    const radius = 16 + Math.min(34, (point.value / max) * 28);
-    ctx.fillStyle = colors[index % colors.length];
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#071015';
-    ctx.font = 'bold 18px ui-sans-serif, system-ui';
-    ctx.textAlign = 'center';
-    ctx.fillText(String(point.value), point.x, point.y + 6);
-    ctx.fillStyle = '#d7e1e8';
-    ctx.font = '15px ui-sans-serif, system-ui';
-    ctx.fillText(point.label, point.x, height - 36);
+function bindSearch() {
+  $('global-search').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const query = new FormData(event.currentTarget).get('q') ?? '';
+    try {
+      const search = await getJson(`/v1/search?q=${encodeURIComponent(String(query))}&limit=12`);
+      renderInventory(search);
+    } catch (error) {
+      $('inventory-table').innerHTML = `<tr class="empty-row"><td colspan="6">${esc(error.message)}</td></tr>`;
+    }
   });
 }
 
-async function loadDashboard(query = '') {
-  const searchPath = query ? `/v1/search?q=${encodeURIComponent(query)}&limit=12` : '/v1/search?limit=12';
-  const [health, snapshot, search, founding] = await Promise.all([
-    getJson('/v1/health'),
+function bindCopy() {
+  $('copy-base-url').addEventListener('click', async () => {
+    await navigator.clipboard.writeText(window.location.origin);
+    $('copy-base-url').textContent = 'Copied';
+    setTimeout(() => {
+      $('copy-base-url').textContent = 'Copy base URL';
+    }, 1400);
+  });
+}
+
+async function loadDashboard() {
+  const healthRequest = timedJson('/v1/health');
+  const [healthResult, snapshot, search, founding] = await Promise.all([
+    healthRequest,
     getJson('/v1/paid/market-snapshot'),
-    getJson(searchPath),
+    getJson('/v1/search?limit=12'),
     getJson('/v1/founding-agents')
   ]);
-  $('live-state').textContent = health.ok ? 'Live API responding' : 'API unavailable';
-  $('updated-at').textContent = `Updated ${time(snapshot.generatedAt)}`;
-  $('base-url').textContent = window.location.origin;
-  renderKpis(snapshot, search, founding);
-  renderBars(snapshot);
-  renderSettlement(health, snapshot);
-  renderListings(search.results ?? []);
-  renderAgents(founding);
+  renderSystem(healthResult.payload, snapshot, healthResult.latencyMs);
+  renderStats(snapshot, founding);
+  renderInventory(search);
   renderTrades(snapshot);
-  drawMarket(snapshot);
+  renderAgents(founding);
 }
 
-$('search-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-  const query = new FormData(event.currentTarget).get('q') ?? '';
-  loadDashboard(String(query)).catch(showError);
-});
-
-function showError(error) {
-  $('live-state').textContent = 'Dashboard load error';
-  $('market').innerHTML = `<article class="kpi-card"><div><span class="label">Error</span><strong>${esc(error.message)}</strong></div></article>`;
+function showFatal(error) {
+  $('live-label').textContent = 'Dashboard error';
+  $('sidebar-status-text').textContent = error.message;
+  $('stats').innerHTML = statCard({
+    label: 'Error',
+    value: '!',
+    note: error.message,
+    delta: '',
+    style: '--glow: rgba(255,91,31,.19); --icon-bg: var(--accent-soft); --icon: var(--accent)',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>'
+  });
 }
 
-loadDashboard().catch(showError);
+bindSearch();
+bindCopy();
+loadDashboard().catch(showFatal);
