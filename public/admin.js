@@ -27,6 +27,10 @@ function text(value) {
   return value === undefined || value === null || value === '' ? '-' : String(value);
 }
 
+function number(value) {
+  return Number.isFinite(Number(value)) ? new Intl.NumberFormat().format(Number(value)) : text(value);
+}
+
 function esc(value) {
   return text(value)
     .replaceAll('&', '&amp;')
@@ -49,6 +53,10 @@ function time(value) {
     minute: '2-digit',
     second: '2-digit'
   }).format(new Date(value));
+}
+
+function sum(values) {
+  return values.reduce((total, value) => total + (Number(value) || 0), 0);
 }
 
 function setGate(visible) {
@@ -89,11 +97,32 @@ function renderTotals(data) {
     <article class="metric" style="--accent:${colors[index % colors.length]}">
       <div>
         <span class="label">${esc(label)}</span>
-        <strong>${esc(data.totals[key])}</strong>
+        <strong>${esc(number(data.totals[key] ?? 0))}</strong>
       </div>
       <span class="spark" aria-hidden="true"></span>
     </article>
   `).join('');
+}
+
+function renderSignals(data, reconciliation) {
+  const recentTrades = data.recent?.trades?.length ?? 0;
+  const openOffers = data.breakdowns?.offersByStatus?.OPEN ?? 0;
+  const activeListings = data.breakdowns?.listingsByStatus?.ACTIVE ?? 0;
+  const marketScore = recentTrades + openOffers + activeListings;
+  const paymentsEnabled = Boolean(data.runtime?.payment?.enabled);
+  const paymentMode = data.runtime?.marketplace?.mode ?? 'free_beta';
+  const disputes = data.totals?.disputes ?? 0;
+  const moderation = data.recent?.moderationEvents?.length ?? 0;
+  const requestErrors = (data.recent?.requestLogs ?? []).filter((log) => Number(log.status) >= 400).length;
+  const findings = reconciliation?.reconciliation?.counts?.findings ?? 0;
+  const riskTotal = disputes + moderation + requestErrors + findings;
+
+  $('signal-market').textContent = marketScore > 0 ? `${number(marketScore)} signals` : 'Quiet';
+  $('signal-market-note').textContent = `${number(activeListings)} active listings, ${number(openOffers)} open offers, ${number(recentTrades)} recent trades`;
+  $('signal-settlement').textContent = paymentsEnabled ? 'Payments enabled' : 'Free beta';
+  $('signal-settlement-note').textContent = `${text(paymentMode)} mode with ${number(data.totals?.paymentIntents ?? 0)} payment intents logged`;
+  $('signal-risk').textContent = riskTotal > 0 ? `${number(riskTotal)} items` : 'Clean';
+  $('signal-risk-note').textContent = `${number(disputes)} disputes, ${number(moderation)} policy signals, ${number(requestErrors)} request errors, ${number(findings)} reconciliation findings`;
 }
 
 function renderBars(id, counts) {
@@ -106,7 +135,7 @@ function renderBars(id, counts) {
       <span class="bar-track">
         <span class="bar-fill" style="--w:${Math.max(4, (count / max) * 100)}%;--accent:${colors[index % colors.length]}"></span>
       </span>
-      <strong>${esc(count)}</strong>
+      <strong>${esc(number(count))}</strong>
     </div>
   `).join('') : fallback;
 }
@@ -186,20 +215,20 @@ function renderPayments(intents, events) {
       kind: 'intent',
       at: intent.createdAt,
       id: intent.id,
-      provider: intent.provider,
+      provider: intent.provider ?? 'sandbox',
       status: intent.status,
       label: `${intent.action} ${intent.amountUsdc} USDC`,
-      meta: `${intent.provider} ${shortId(intent.providerPaymentId)}`,
+      meta: `${intent.provider ?? 'sandbox'} ${shortId(intent.providerPaymentId)}`,
       tx: intent.providerPaymentId
     })),
     ...(events ?? []).map((event) => ({
       kind: 'event',
       at: event.createdAt,
       id: event.paymentIntentId,
-      provider: event.provider,
+      provider: event.provider ?? 'sandbox',
       status: event.status,
       label: event.type,
-      meta: `${event.provider} ${shortId(event.paymentIntentId)}`,
+      meta: `${event.provider ?? 'sandbox'} ${shortId(event.paymentIntentId)}`,
       tx: event.payload?.transaction
     }))
   ].sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? ''))).slice(0, 12);
@@ -422,11 +451,12 @@ function render(data, reconciliation) {
   $('marketplace-mode').textContent = `${text(data.runtime.marketplace?.mode)} / ${data.runtime.payment?.enabled ? 'payments on' : 'free beta'}`;
   $('updated-at').textContent = time(data.generatedAt);
   const hidden = data.view?.syntheticExcluded ?? {};
-  const hiddenTotal = (hidden.agents ?? 0) + (hidden.listings ?? 0) + (hidden.offers ?? 0) + (hidden.trades ?? 0);
+  const hiddenTotal = sum([hidden.agents, hidden.listings, hidden.offers, hidden.trades]);
   $('trade-total').textContent = hiddenTotal > 0
-    ? `${data.totals.trades} real / ${hiddenTotal} test hidden`
-    : `${data.totals.trades} total`;
+    ? `${number(data.totals.trades)} real / ${number(hiddenTotal)} test hidden`
+    : `${number(data.totals.trades)} total`;
 
+  renderSignals(data, reconciliation);
   renderTotals(data);
   renderBars('trade-bars', data.breakdowns.tradesByState);
   renderBars('market-bars', {

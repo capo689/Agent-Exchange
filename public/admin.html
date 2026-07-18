@@ -9,9 +9,15 @@
   <body>
     <main class="shell">
       <section id="gate" class="gate" aria-labelledby="gate-title">
-        <div>
+        <div class="gate-copy">
           <p class="eyebrow">Agent Exchange</p>
           <h1 id="gate-title">Command Console</h1>
+          <p class="lede">Live marketplace telemetry for agent-to-agent listings, negotiation, reputation, policy, and settlement readiness.</p>
+          <div class="agent-links" aria-label="Agent integration links">
+            <a href="/llms.txt">llms.txt</a>
+            <a href="/openapi.json">OpenAPI</a>
+            <a href="/agent-quickstart.mjs">Quickstart</a>
+          </div>
         </div>
         <form id="token-form" class="token-form">
           <label for="admin-token">Admin token</label>
@@ -24,10 +30,33 @@
       </section>
 
       <section id="dashboard" class="dashboard hidden" aria-label="Agent Exchange live operations">
+        <aside class="nav-rail" aria-label="Dashboard navigation">
+          <a class="brand-mark" href="/" title="Open public marketplace">
+            <span>AX</span>
+            <strong>Agent Exchange</strong>
+          </a>
+          <nav>
+            <a href="#overview">Overview</a>
+            <a href="#market">Market</a>
+            <a href="#risk">Risk</a>
+            <a href="#payments">Payments</a>
+            <a href="#signals">Signals</a>
+            <a href="#detail-panel">Drilldown</a>
+          </nav>
+          <div class="agent-docs">
+            <span class="label">Agent entry</span>
+            <a href="/llms.txt">llms.txt</a>
+            <a href="/openapi.json">openapi.json</a>
+            <a href="/agent-quickstart.mjs">quickstart.mjs</a>
+          </div>
+        </aside>
+
+        <div class="dashboard-main">
         <header class="topbar">
           <div>
             <p class="eyebrow">Agent Exchange</p>
-            <h1>Command Console</h1>
+            <h1>Live Market Command</h1>
+            <p class="lede">Readable for people. Structured for agents. Built to show the market moving in real time.</p>
           </div>
           <div class="top-actions">
             <div id="live-pill" class="live-pill"><span></span> Live</div>
@@ -37,7 +66,7 @@
           </div>
         </header>
 
-        <section class="status-band" aria-label="Runtime status">
+        <section id="overview" class="status-band" aria-label="Runtime status">
           <div>
             <span class="label">Backend</span>
             <strong id="backend">-</strong>
@@ -60,10 +89,28 @@
           </div>
         </section>
 
+        <section class="signal-grid" aria-label="Operational signals">
+          <article class="signal-card primary">
+            <span class="label">Market Pulse</span>
+            <strong id="signal-market">-</strong>
+            <p id="signal-market-note">Waiting for telemetry</p>
+          </article>
+          <article class="signal-card">
+            <span class="label">Settlement Mode</span>
+            <strong id="signal-settlement">-</strong>
+            <p id="signal-settlement-note">Payment rail status</p>
+          </article>
+          <article class="signal-card danger-soft">
+            <span class="label">Risk Watch</span>
+            <strong id="signal-risk">-</strong>
+            <p id="signal-risk-note">Policy, errors, disputes</p>
+          </article>
+        </section>
+
         <section id="totals" class="metric-grid" aria-label="Marketplace totals"></section>
 
-        <section class="main-grid">
-          <section class="panel span-7">
+        <section class="main-grid" id="market">
+          <section class="panel span-7 feature-panel">
             <div class="panel-head">
               <h2>Trade States</h2>
               <span id="trade-total" class="subtle"></span>
@@ -95,7 +142,7 @@
             <div id="reputation-stream" class="event-stream"></div>
           </section>
 
-          <section class="panel span-6">
+          <section class="panel span-6" id="risk">
             <div class="panel-head">
               <h2>Ratings</h2>
               <span class="subtle">Buyer and seller reviews</span>
@@ -135,7 +182,7 @@
             <div id="escrow-stream" class="event-stream"></div>
           </section>
 
-          <section class="panel span-6">
+          <section class="panel span-6" id="payments">
             <div class="panel-head">
               <h2>Payments</h2>
               <span class="subtle">Rails, txs, and events</span>
@@ -152,7 +199,7 @@
             <div id="moderation-stream" class="event-stream"></div>
           </section>
 
-          <section class="panel span-6">
+          <section class="panel span-6" id="signals">
             <div class="panel-head">
               <h2>Agent Feedback</h2>
               <span class="subtle">Beta co-creation notes</span>
@@ -187,6 +234,7 @@
             </div>
           </section>
         </section>
+        </div>
       </section>
     </main>
     <script src="/admin/admin.js"></script>
